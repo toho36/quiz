@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { createRoomAction, publishQuizAction, signInDemoAuthorAction, signOutDemoAuthorAction } from '@/app/actions';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
+import { Button } from '@/components/ui/button';
 import { getDemoAppService } from '@/lib/server/demo-app-service';
 import { getDemoAuthorActor } from '@/lib/server/demo-session';
 
@@ -31,12 +32,12 @@ export default async function DashboardPage({
         description="This route stays behind a server-owned demo author session so authoring and room bootstrap actions never depend on client-only state."
       >
         <SectionCard title="Sign in to continue" eyebrow="Demo author">
-          <p className="text-sm text-slate-300">Use the lightweight demo author session to reach the authoring and host flows.</p>
+          <p className="text-sm text-muted-foreground">Use the lightweight demo author session to reach the authoring and host flows.</p>
           <form action={signInDemoAuthorAction} className="mt-4">
             <input name="next" type="hidden" value="/dashboard" />
-            <button className="rounded-full bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950" type="submit">
+            <Button className="h-10 rounded-full px-4" type="submit">
               Continue as demo author
-            </button>
+            </Button>
           </form>
         </SectionCard>
       </PageShell>
@@ -55,51 +56,51 @@ export default async function DashboardPage({
     >
       {(notice || error) && (
         <SectionCard title={error ? 'Action blocked' : 'Ready'} eyebrow={error ? 'Needs attention' : 'Updated'}>
-          <p className="text-sm text-slate-300">{error ?? notice}</p>
+          <p className="text-sm text-muted-foreground">{error ?? notice}</p>
         </SectionCard>
       )}
 
       <div className="flex flex-wrap gap-3">
-        <Link className="rounded-full border border-border px-4 py-2 text-sm text-slate-200" href="/authoring">
-          Open authoring
-        </Link>
+        <Button asChild className="h-10 rounded-full px-4" variant="outline">
+          <Link href="/authoring">Open authoring</Link>
+        </Button>
         <form action={signOutDemoAuthorAction}>
-          <button className="rounded-full border border-border px-4 py-2 text-sm text-slate-200" type="submit">
+          <Button className="h-10 rounded-full px-4" type="submit" variant="outline">
             Exit demo session
-          </button>
+          </Button>
         </form>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
         {quizzes.map((quiz) => (
           <SectionCard key={quiz.quiz_id} title={quiz.title} eyebrow={`Quiz · ${quiz.status}`}>
-            <dl className="space-y-2 text-sm text-slate-300">
+            <dl className="space-y-2 text-sm text-muted-foreground">
               <div className="flex justify-between gap-4">
-                <dt className="text-slate-500">Questions</dt>
+                <dt className="text-muted-foreground/70">Questions</dt>
                 <dd>{quiz.question_count}</dd>
               </div>
               <div className="flex justify-between gap-4">
-                <dt className="text-slate-500">Updated</dt>
+                <dt className="text-muted-foreground/70">Updated</dt>
                 <dd>{quiz.updated_at}</dd>
               </div>
             </dl>
             <div className="mt-4 flex flex-wrap gap-3">
-              <Link className="rounded-full border border-border px-4 py-2 text-sm text-slate-200" href={`/authoring?quizId=${quiz.quiz_id}` as Route}>
-                Edit quiz
-              </Link>
+              <Button asChild className="h-10 rounded-full px-4" variant="outline">
+                <Link href={`/authoring?quizId=${quiz.quiz_id}` as Route}>Edit quiz</Link>
+              </Button>
               {quiz.status === 'draft' ? (
                 <form action={publishQuizAction}>
                   <input name="quizId" type="hidden" value={quiz.quiz_id} />
-                  <button className="rounded-full bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950" type="submit">
+                  <Button className="h-10 rounded-full px-4" type="submit">
                     Publish draft
-                  </button>
+                  </Button>
                 </form>
               ) : (
                 <form action={createRoomAction}>
                   <input name="quizId" type="hidden" value={quiz.quiz_id} />
-                  <button className="rounded-full bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950" type="submit">
+                  <Button className="h-10 rounded-full px-4" type="submit">
                     Create host room
-                  </button>
+                  </Button>
                 </form>
               )}
             </div>
@@ -109,17 +110,17 @@ export default async function DashboardPage({
 
       <SectionCard title="Hosted rooms" eyebrow="Runtime bootstrap">
         {rooms.length === 0 ? (
-          <p className="text-sm text-slate-300">Create a room from a published quiz to open the host and join flows.</p>
+          <p className="text-sm text-muted-foreground">Create a room from a published quiz to open the host and join flows.</p>
         ) : (
-          <ul className="space-y-3 text-sm text-slate-300">
+          <ul className="space-y-3 text-sm text-muted-foreground">
             {rooms.map((room) => (
-              <li key={room.room_code} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border px-4 py-3">
+              <li key={room.room_code} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/80 bg-background/40 px-4 py-3">
                 <span>
                   {room.room_code} · {room.lifecycle_state} · {room.joined_player_count} player(s)
                 </span>
-                <Link className="text-sky-300 hover:text-sky-200" href={`/host?roomCode=${room.room_code}` as Route}>
-                  Open host room →
-                </Link>
+                <Button asChild className="h-auto px-0 text-sky-200" variant="link">
+                  <Link href={`/host?roomCode=${room.room_code}` as Route}>Open host room →</Link>
+                </Button>
               </li>
             ))}
           </ul>

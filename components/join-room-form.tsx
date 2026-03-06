@@ -1,30 +1,35 @@
 import { joinRoomAction } from '@/app/actions';
 import { SectionCard } from '@/components/section-card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
 export function JoinRoomForm({ roomCode }: { roomCode?: string }) {
   return (
     <SectionCard title="Join a room" eyebrow="Server action">
       <form action={joinRoomAction} className="space-y-4">
-        <label className="block space-y-2 text-sm text-slate-300">
+        <Label className="flex-col items-start gap-2 text-sm text-muted-foreground" htmlFor="room-code">
           <span>Room code</span>
-          <input
-            className="w-full rounded-2xl border border-border bg-slate-950 px-4 py-3 text-white outline-none ring-0 placeholder:text-slate-500"
+          <Input
+            id="room-code"
+            className="h-11 rounded-2xl bg-background/60 px-4"
             defaultValue={roomCode}
             name="roomCode"
             placeholder="ABCD-1234"
           />
-        </label>
-        <label className="block space-y-2 text-sm text-slate-300">
+        </Label>
+        <Label className="flex-col items-start gap-2 text-sm text-muted-foreground" htmlFor="display-name">
           <span>Display name</span>
-          <input
-            className="w-full rounded-2xl border border-border bg-slate-950 px-4 py-3 text-white outline-none ring-0 placeholder:text-slate-500"
+          <Input
+            id="display-name"
+            className="h-11 rounded-2xl bg-background/60 px-4"
             name="displayName"
             placeholder="Player One"
           />
-        </label>
-        <button className="rounded-full bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950" type="submit">
+        </Label>
+        <Button className="h-10 rounded-full px-4" type="submit">
           Join room
-        </button>
+        </Button>
       </form>
     </SectionCard>
   );

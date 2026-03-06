@@ -16,7 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const config = getPublicRuntimeConfig();
 
   return (
-    <html lang="en" className={cn("font-sans", geist.variable)}>
+    <html lang="en" className={cn('dark', 'font-sans', geist.variable)}>
       <body>
         <div className="min-h-screen bg-canvas">
           <header className="border-b border-border bg-slate-950/80 backdrop-blur">

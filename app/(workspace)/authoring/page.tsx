@@ -3,6 +3,10 @@ import Link from 'next/link';
 import { publishQuizAction, saveQuizDetailsAction, signInDemoAuthorAction } from '@/app/actions';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import { getDemoAppService } from '@/lib/server/demo-app-service';
 import { getDemoAuthorActor } from '@/lib/server/demo-session';
 
@@ -33,9 +37,9 @@ export default async function AuthoringPage({
         <SectionCard title="Sign in to edit quizzes" eyebrow="Guard">
           <form action={signInDemoAuthorAction} className="mt-2">
             <input name="next" type="hidden" value="/authoring" />
-            <button className="rounded-full bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950" type="submit">
+            <Button className="h-10 rounded-full px-4" type="submit">
               Continue as demo author
-            </button>
+            </Button>
           </form>
         </SectionCard>
       </PageShell>
@@ -55,19 +59,20 @@ export default async function AuthoringPage({
     >
       {(notice || error) && (
         <SectionCard title={error ? 'Save blocked' : 'Updated'} eyebrow={error ? 'Validation' : 'Server action'}>
-          <p className="text-sm text-slate-300">{error ?? notice}</p>
+          <p className="text-sm text-muted-foreground">{error ?? notice}</p>
         </SectionCard>
       )}
 
       <div className="flex flex-wrap gap-3">
         {quizzes.map((quiz) => (
-          <Link
+          <Button
             key={quiz.quiz_id}
-            className={`rounded-full border px-4 py-2 text-sm ${quiz.quiz_id === selectedQuizId ? 'border-sky-400 text-white' : 'border-border text-slate-300'}`}
-            href={`/authoring?quizId=${quiz.quiz_id}` as Route}
+            asChild
+            className="rounded-full px-4"
+            variant={quiz.quiz_id === selectedQuizId ? 'default' : 'outline'}
           >
-            {quiz.title}
-          </Link>
+            <Link href={`/authoring?quizId=${quiz.quiz_id}` as Route}>{quiz.title}</Link>
+          </Button>
         ))}
       </div>
 
@@ -76,41 +81,43 @@ export default async function AuthoringPage({
           <SectionCard title={document.quiz.title} eyebrow={`Quiz · ${document.quiz.status}`}>
             <form action={saveQuizDetailsAction} className="space-y-4">
               <input name="quizId" type="hidden" value={document.quiz.quiz_id} />
-              <label className="block space-y-2 text-sm text-slate-300">
+              <Label className="flex-col items-start gap-2 text-sm text-muted-foreground" htmlFor="quiz-title">
                 <span>Title</span>
-                <input
-                  className="w-full rounded-2xl border border-border bg-slate-950 px-4 py-3 text-white"
+                <Input
+                  id="quiz-title"
+                  className="h-11 rounded-2xl bg-background/60 px-4"
                   defaultValue={document.quiz.title}
                   name="title"
                 />
-              </label>
-              <label className="block space-y-2 text-sm text-slate-300">
+              </Label>
+              <Label className="flex-col items-start gap-2 text-sm text-muted-foreground" htmlFor="quiz-description">
                 <span>Description</span>
-                <textarea
-                  className="min-h-32 w-full rounded-2xl border border-border bg-slate-950 px-4 py-3 text-white"
+                <Textarea
+                  id="quiz-description"
+                  className="min-h-32 rounded-2xl bg-background/60 px-4 py-3"
                   defaultValue={document.quiz.description}
                   name="description"
                 />
-              </label>
+              </Label>
               <div className="flex flex-wrap gap-3">
-                <button className="rounded-full bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950" type="submit">
+                <Button className="h-10 rounded-full px-4" type="submit">
                   Save draft
-                </button>
+                </Button>
                 {document.quiz.status === 'draft' && (
-                  <button className="rounded-full border border-border px-4 py-2 text-sm text-slate-200" formAction={publishQuizAction} type="submit">
+                  <Button className="h-10 rounded-full px-4" formAction={publishQuizAction} type="submit" variant="outline">
                     Publish quiz
-                  </button>
+                  </Button>
                 )}
               </div>
             </form>
           </SectionCard>
 
           <SectionCard title="Frozen runtime boundary" eyebrow="Questions">
-            <ul className="space-y-3 text-sm text-slate-300">
+            <ul className="space-y-3 text-sm text-muted-foreground">
               {document.questions.map((entry) => (
-                <li key={entry.question.question_id} className="rounded-2xl border border-border px-4 py-3">
-                  <p className="font-medium text-white">{entry.question.prompt}</p>
-                  <p className="mt-1 text-slate-400">
+                <li key={entry.question.question_id} className="rounded-2xl border border-border/80 bg-background/40 px-4 py-3">
+                  <p className="font-medium text-foreground">{entry.question.prompt}</p>
+                  <p className="mt-1 text-muted-foreground/80">
                     {entry.question.question_type} · {entry.options.length} option(s)
                   </p>
                 </li>
@@ -120,7 +127,7 @@ export default async function AuthoringPage({
         </div>
       ) : (
         <SectionCard title="No quiz available" eyebrow="Authoring">
-          <p className="text-sm text-slate-300">Return to the dashboard to choose a seeded quiz.</p>
+          <p className="text-sm text-muted-foreground">Return to the dashboard to choose a seeded quiz.</p>
         </SectionCard>
       )}
     </PageShell>
