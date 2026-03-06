@@ -10,25 +10,25 @@ export const appRoutes: AppRoute[] = [
   {
     href: '/dashboard',
     label: 'Dashboard',
-    description: 'Future Clerk-protected overview for author-owned quizzes.',
+    description: 'Guarded demo author dashboard with publish and host-room actions.',
     section: 'workspace',
   },
   {
     href: '/authoring',
     label: 'Authoring',
-    description: 'Future authoring workspace backed by server actions and validators.',
+    description: 'Minimal authoring form backed by the shared server-side quiz boundary.',
     section: 'workspace',
   },
   {
     href: '/host',
     label: 'Host',
-    description: 'Server-rendered room bootstrap boundary for host claims.',
+    description: 'Host room view that advances lifecycle through the runtime gameplay service.',
     section: 'runtime',
   },
   {
     href: '/join',
     label: 'Join',
-    description: 'Guest join entry point that keeps player state room-scoped.',
+    description: 'Player join form that binds a room-scoped session before play.',
     section: 'runtime',
   },
 ];

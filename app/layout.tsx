@@ -1,10 +1,13 @@
-import type { Metadata } from 'next';
 import Link from 'next/link';
 import './globals.css';
 import { getPublicRuntimeConfig } from '@/lib/env/public';
 import { primaryRoutes } from '@/lib/shared/routes';
+import { Geist } from "next/font/google";
+import { cn } from "@/lib/utils";
 
-export const metadata: Metadata = {
+const geist = Geist({subsets:['latin'],variable:'--font-sans'});
+
+export const metadata = {
   title: 'Quiz',
   description: 'Foundation shell for the Quiz MVP.',
 };
@@ -13,7 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const config = getPublicRuntimeConfig();
 
   return (
-    <html lang="en">
+    <html lang="en" className={cn("font-sans", geist.variable)}>
       <body>
         <div className="min-h-screen bg-canvas">
           <header className="border-b border-border bg-slate-950/80 backdrop-blur">
