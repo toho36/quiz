@@ -1,8 +1,11 @@
+/// <reference types="bun-types" />
+
 import { describe, expect, test } from 'bun:test';
 import {
   answerSelectionSchema,
   answerSubmissionCommandSchema,
   answerSubmissionRecordSchema,
+  type AuthoringQuizDocument,
   authoringQuizDocumentSchema,
   createRoomResponseSchema,
   hostClaimCommandSchema,
@@ -67,7 +70,7 @@ describe('shared domain contracts', () => {
   });
 
   test('rejects invalid multiple-choice option composition', () => {
-    const invalid = structuredClone(publishedQuizDocumentFixture);
+    const invalid = structuredClone(publishedQuizDocumentFixture) as unknown as AuthoringQuizDocument;
     invalid.questions[1].options = [
       { option_id: 'option-3', question_id: 'question-2', position: 1, text: '2', is_correct: true },
       { option_id: 'option-4', question_id: 'question-2', position: 2, text: '4', is_correct: false },
