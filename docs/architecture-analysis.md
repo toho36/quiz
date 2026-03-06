@@ -201,4 +201,18 @@ Návrh je funkčně dobrý jako MVP koncept, ale před implementací je potřeba
 4. validační a lifecycle pravidla.
 
 Aktuálně nebyly provedeny opravy aplikačního kódu, protože v repozitáři zatím žádný kód není.
-Navazující detailnější návrhy jsou postupně rozpracované v samostatných dokumentech v `docs/`, aby se architektura upřesnila ještě před implementací.
+Navazující detailnější návrhy jsou rozpracované v samostatných dokumentech v `docs/`, zejména:
+
+- `docs/design-overview.md`
+- `docs/authoring-runtime-boundary.md`
+- `docs/permission-matrix.md`
+- `docs/auth-identity-flow.md`
+- `docs/runtime-state-machine.md`
+- `docs/runtime-data-model.md`
+- `docs/scoring-gameplay-rules.md`
+- `docs/system-boundaries-risk-register.md`
+- `docs/api-dto-contracts.md`
+- `docs/authoring-policy.md`
+- `docs/deployment-env-checklist.md`
+
+Tyto dokumenty je vhodné brát jako upřesnění a rozšíření tohoto původního architektonického přehledu.
