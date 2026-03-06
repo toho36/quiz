@@ -22,12 +22,12 @@ Tento dokument je rozcestník nad návrhovou dokumentací Quiz App. Nezavádí n
   - scoring modes, evaluation policy, shuffle, fairness a leaderboard pravidla
 - `docs/system-boundaries-risk-register.md`
   - high-level boundary mezi klientem, Next.js server vrstvou a realtime vrstvou
-  - hlavní bezpečnostní rizika, edge casy a otevřené otázky
+  - hlavní bezpečnostní rizika, edge casy a stav uzavření hlavních otázek
 - `docs/api-dto-contracts.md`
   - API boundary mezi Next.js server vrstvou a SpacetimeDB runtime vrstvou
   - DTO payloady, command/state kontrakty a validační pravidla
 - `docs/deployment-env-checklist.md`
-  - návrhový checklist pro prostředí, secrets, public env a deployment boundary
+  - uzavřený MVP policy pro prostředí, secrets, runtime connect credential boundary a minimum observability
 - `docs/authoring-policy.md`
   - publish workflow, validační policy a authoring lifecycle
 
@@ -56,6 +56,7 @@ Tento dokument je rozcestník nad návrhovou dokumentací Quiz App. Nezavádí n
 - klient nesmí být autoritou pro correctness, scoring, timer ani state transitions
 - aktivní roomka musí běžet nad frozen runtime snapshotem
 - authoring a runtime se mají striktně oddělit
+- preview a production musí mít oddělené runtime prostředí, Clerk konfiguraci a credentials
 - `option_id` musí být stabilní a correctness se vyhodnocuje podle ID, ne pozice
 - shuffle pořadí odpovědí se má dělat serverově jednou na room-question
 - multiple-choice v MVP má používat `exact_match`
@@ -107,17 +108,13 @@ Tento dokument je rozcestník nad návrhovou dokumentací Quiz App. Nezavádí n
 - `exact_match` pro multiple-choice
 - snapshot quizu při `start_game`
 - bez co-host a spectator role v MVP
+- browser nedostává privileged runtime credentials; jen room-scoped proof/token materiál pro vlastní session
+- minimum observability pro MVP = strukturované logy bootstrap, join/reconnect a lifecycle chyb bez citlivých dat
 
 ## 8. Co ještě není definitivně uzavřené
 
-- přesný bootstrap tvar host claim flow do SpacetimeDB
-- přesný reconnect/rebind mechanismus při více zařízeních
-- finální reprezentace ordered collections v runtime vrstvě
-- room TTL / expiry policy a perzistence výsledků po hře
-- finální `speed_weighted` formule a související tie-break detaily
-- přesná izolace preview a production runtime prostředí
-- zda bude možné vytvářet room i z draft quizu pro interní testování
-- free-tier subscription strategie a ergonomie realtime payloadů
+- pro MVP už v aktuální dokumentaci nezůstává žádná blokující otevřená architektonická otázka
+- případné budoucí změny se mají otevírat přímo v tematickém dokumentu, ne vracením obecného backlogu do `todo.md`
 
 ## 9. Doporučené čtení před implementací
 

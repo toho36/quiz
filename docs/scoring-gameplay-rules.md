@@ -30,6 +30,11 @@ Důvod:
 ### `speed_weighted`
 - správná odpověď dává body podle correctness a rychlosti
 - rychlost se měří jen serverově podle acceptance time vůči deadline/open time
+- pro timed question používá lineární škálu od 100 % `base_points` při okamžité správné odpovědi po 50 % `base_points` při správné odpovědi doručené přesně na deadline
+- `elapsed_ratio = clamp((accepted_at - opened_at) / (deadline_at - opened_at), 0, 1)`
+- `awarded_points = floor(base_points * (1 - 0.5 * elapsed_ratio))`
+- incorrect answer nebo no-answer = `0`
+- pokud otázka nemá time limit, `speed_weighted` se chová stejně jako `correctness_only`
 
 ### `correctness_only`
 - body závisí jen na correctness
@@ -60,14 +65,16 @@ Důvod:
 ## 8. Leaderboard pravidla
 
 Doporučené pořadí:
-1. `score_total`
-2. `correct_count`
-3. stabilní tie-break, například `join_order`
+1. `score_total` DESC
+2. `correct_count` DESC
+3. `join_order` ASC
 
 Doporučení:
 - leaderboard nepřepočítávat klientem jako zdroj pravdy
 - pořadí po kole finalizovat až po `question_closed`
 - průběžné live rank změny během `question_open` v MVP raději neukazovat
+- pořadí zůstává deterministické po celý běh roomky i po reconnectu
+- po poslední otázce se vždy zobrazí samostatná finální `leaderboard` fáze; teprve po ní room lifecycle přejde do `finished`
 
 ## 9. Férovost a bezpečnost
 
@@ -82,12 +89,16 @@ Doporučení:
 - scoring mode řešit jako runtime policy roomky nebo otázky
 - correctness a score zapisovat až po autoritativním vyhodnocení serverem
 - scoreboard updates dávkovat po uzavření kola, ne po každém kliknutí hráče
+- speed bonus držet lineární a konzervativní, aby correctness zůstala dominantní složkou výsledku
 
 ## 11. Co je vhodné pro MVP
 
 - `single_choice` + `multiple_choice`
 - `exact_match` pro multiple-choice
 - `speed_weighted` a `correctness_only`
+- lineární `speed_weighted` s rozsahem 100 % -> 50 % `base_points`
+- tie-break přes `join_order` po `score_total` a `correct_count`
+- samostatná finální `leaderboard` fáze po poslední otázce
 - bez partial credit
 - bez live leaderboard turbulence během otevřené otázky
 - no-answer = zero points
@@ -101,9 +112,9 @@ Doporučení:
 - penalizace za špatnou odpověď
 - individualizovaný shuffle per player
 
-## 13. Otevřené otázky
+## 13. Uzavřená MVP rozhodnutí
 
-- Není zatím finálně uzavřeno, zda `speed_weighted` bude mít lineární nebo pásmový výpočet bodů.
-- Není zatím finálně rozhodnuto, zda se u `multiple_choice` připustí v budoucnu partial credit.
-- Není zatím uzavřeno, zda leaderboard po poslední otázce bude samostatná fáze, nebo součást finálního reveal.
+- `speed_weighted` používá lineární výpočet podle serverově změřeného času.
+- `multiple_choice` zůstává v MVP bez partial credit.
+- finální leaderboard je samostatná `leaderboard` fáze po posledním `reveal`.
 

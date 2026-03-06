@@ -90,20 +90,22 @@ Doporučená data:
 - `title` nesmí být prázdný.
 - `default_scoring_mode` musí být kompatibilní s runtime scoring mode návrhem.
 - `default_question_time_limit_seconds` má mít centrálně omezený rozumný rozsah.
+- published quiz musí obsahovat 1 až 50 otázek.
 
 ### Question-level pravidla
 
 - `position` musí být unikátní v rámci quizu.
 - `prompt` nesmí být prázdný.
 - `single_choice` musí mít právě jednu správnou option.
-- `multiple_choice` musí mít alespoň dvě možnosti a alespoň dvě správné nebo jednu správnou podle finální policy.
+- `multiple_choice` musí mít 3 až 6 options, alespoň dvě správné options a alespoň jednu nesprávnou option.
 - `time_limit_seconds`, pokud je vyplněný, musí respektovat definovaný rozsah.
 
 ### Option-level pravidla
 
 - `position` musí být unikátní v rámci otázky.
 - text options nesmí být prázdný.
-- doporučené minimum pro MVP jsou 2 options, doporučené maximum je třeba centrálně stanovit.
+- `single_choice` musí mít 2 až 6 options.
+- žádná otázka nesmí mít více než 6 options.
 
 ## 5. Publish a edit boundary
 
@@ -112,6 +114,7 @@ Doporučená data:
 - `draft` quiz lze volně upravovat.
 - `published` quiz lze stále editovat, ale změny nesmí rozbít již běžící roomky.
 - běžící roomka musí používat snapshot vytvořený při startu hry.
+- standardní runtime room bootstrap se v MVP povoluje jen pro `published` quiz.
 
 ### Důsledek
 
@@ -120,11 +123,20 @@ Editace po startu roomky:
 - může změnit budoucí hry,
 - nesmí změnit aktivní roomku.
 
+Rozhodnutí pro MVP:
+- `draft` quiz se do runtime roomky nespouští ani pro interní testování
+- interní test flow má používat published quiz, protože frozen snapshot už odděluje běžící roomku od pozdějších authoring změn
+
 ## 6. Runtime snapshot boundary
 
 ### Doporučení
 
 Snapshot vytvářet při `start_game`, ne už při `create_room`.
+
+Finální rozhodnutí pro MVP:
+- snapshotuje se celý quiz naráz při `start_game`
+- pořadí otázek v runtime drží explicitní `question_index`
+- pořadí options drží `author_position` a po shuffle `display_position` přímo na snapshot rows
 
 Výhody:
 
@@ -183,10 +195,9 @@ Po vytvoření snapshotu nesmí authoring změna ovlivnit:
 - soft delete a audit trails,
 - pokročilé validační a moderation workflow.
 
-## 12. Otevřené otázky
+## 12. Uzavřená MVP rozhodnutí
 
-- Není zatím finálně rozhodnuto, zda snapshotovat celý quiz naráz, nebo otázku po otázce.
-- Není zatím finálně rozhodnuto, jak přesně reprezentovat ordered collections v runtime vrstvě.
-- Není zatím uzavřeno, zda bude dlouhodobě potřeba explicitní `quiz_revision` entita.
-
-Pro MVP je nejbezpečnější a nejjednodušší směr snapshotovat celý quiz při `start_game` a běžící roomku plně oddělit od pozdějších authoring úprav.
+- snapshotuje se celý published quiz při `start_game`
+- ordered collections používají explicitní pozice na jednotlivých rows
+- samostatná `quiz_revision` entita se pro MVP nezavádí
+- runtime room z `draft` quizu se v MVP nevytváří

@@ -1,59 +1,55 @@
-# Quiz App – TODO
+# Quiz App – architecture closure summary
 
-## Skutečně neuzavřené body
+## Status
+
+- tento soubor už neslouží jako otevřený MVP architektonický backlog
+- uzavřená rozhodnutí jsou zapsaná v tematických dokumentech v `docs/`
+- další práce má být implementační a validační, ne návrat k obecnému seznamu otevřených návrhových otázek
+
+## Uzavřený souhrn podle oblastí
 
 ### 1. Auth a runtime identita
 
-- přesný formát host claim bootstrapu mezi Clerk / Next.js / SpacetimeDB
-- přesný tvar player resume / reconnect tokenu včetně expirace a rotace
-- konflikt dvou současných reconnectů stejné identity
-- rozhodnutí, zda player join v MVP půjde přímo přes reducer, nebo přes Next.js bootstrap
+- uzavřeno v `docs/auth-identity-flow.md`, `docs/api-dto-contracts.md` a `docs/permission-matrix.md`
+- host claim v MVP = Next.js-issued, room-scoped, signed, single-use proof s TTL 60 sekund; raw Clerk token se do runtime vrstvy nepředává
+- player join v MVP jde přímo přes SpacetimeDB reducer
+- player resume token = opaque room-scoped secret, uložený serverově jen jako hash, s explicitní expirací a rotací při každém úspěšném reconnectu
 
 ### 2. Runtime lifecycle a perzistence
 
-- room TTL / expiry policy
-- chování roomky po dokončení hry a při pozdním reconnectu
-- zda a kam ukládat finální výsledky persistentně mimo runtime vrstvu
+- uzavřeno v `docs/runtime-state-machine.md` a `docs/runtime-data-model.md`
+- room po `finished` nebo `aborted` zůstává 30 minut read-only do `expires_at`, potom přechází do `expired`
+- finální výsledky se v MVP neukládají persistentně mimo runtime vrstvu; zůstávají dostupné jen do `expires_at`
 
 ### 3. Scoring a leaderboard detaily
 
-- finální formule `speed_weighted`
-- potvrzení stabilního tie-break pravidla
-- zda bude finální leaderboard samostatná runtime fáze i po poslední otázce
+- uzavřeno v `docs/scoring-gameplay-rules.md`
+- `speed_weighted` používá lineární serverově měřenou škálu 100 % -> 50 % `base_points`
+- tie-break pořadí = `score_total` DESC, `correct_count` DESC, `join_order` ASC
+- po poslední otázce vždy proběhne samostatná finální `leaderboard` fáze před `finished`
 
 ### 4. Datový model a realtime ergonomie
 
-- finální reprezentace ordered collections v runtime vrstvě
-- případná potřeba samostatných leaderboard snapshotů
-- subscription strategie kvůli free-tier limitům a egressu
-- míra odlišnosti host state DTO oproti player state DTO
+- uzavřeno v `docs/runtime-data-model.md` a `docs/api-dto-contracts.md`
+- ordered collections v runtime používají explicitní `question_index`, `author_position` a `display_position` na jednotlivých rows
+- samostatná historická `leaderboard_snapshot` entita se v MVP nezavádí; leaderboard feed vychází z finalizovaných agregátů
+- subscription strategie je room-scoped, role-specific a postavená na úzkých public projekcích/views kvůli payloadu a egressu
 
 ### 5. Authoring policy a validační limity
 
-- zda je dlouhodobě potřeba `quiz_revision` entita
-- přesné limity pro max počet otázek a max počet options
-- zda `multiple_choice` musí mít vždy alespoň dvě správné options
-- zda bude možné vytvořit room i z draft quizu pro interní testování
+- uzavřeno v `docs/authoring-policy.md` a `docs/authoring-runtime-boundary.md`
+- `quiz_revision` se pro MVP nezavádí; vrátí se až při potřebě rollbacku nebo publish history
+- publish vyžaduje 1 až 50 otázek na quiz a maximálně 6 options na otázku
+- runtime room z `draft` quizu se v MVP nevytváří; interní testování má použít published quiz a frozen snapshot boundary
 
 ### 6. Deployment a prostředí
 
-- přesná izolace preview a production runtime prostředí
-- vhodné credential schéma pro klientský connect do runtime vrstvy bez oslabení bezpečnosti
-- minimální observability stack potřebný pro MVP
+- uzavřeno v `docs/deployment-env-checklist.md`, s high-level vazbou v `docs/design-overview.md` a `docs/system-boundaries-risk-register.md`
+- preview a production jsou pro MVP striktně oddělené na úrovni Clerk konfigurace, runtime projektu/instance i credentials; preview nikdy nepoužívá production runtime
+- browser dostává jen veřejný runtime endpoint a room-scoped proof/token materiál pro konkrétní session; privileged runtime credentials a signing secrets zůstávají server-only
+- minimum observability pro MVP = searchable strukturované logy bootstrap, join/reconnect, lifecycle přechodů a fatálních chyb bez citlivých dat
 
-## Nově doplněná dokumentace
+## Poznámka k dalším krokům
 
-- `docs/api-dto-contracts.md`
-- `docs/deployment-env-checklist.md`
-- `docs/authoring-policy.md`
-
-## Doporučené další návrhové kroky
-
-1. uzavřít host claim a player resume kontrakty
-2. potvrdit finální `speed_weighted` a leaderboard policy
-3. rozhodnout ordered collections a realtime subscription strategii
-4. potvrdit preview/production runtime izolaci a minimální observability
-
-## Poznámka
-
-Aktuální dokumentace už pokrývá hlavní návrhové oblasti před implementací. Tento `todo.md` teď obsahuje už jen skutečně otevřené otázky a doporučené další uzavírací kroky.
+- implementace má vycházet z `docs/design-overview.md` jako rozcestníku a z tematických dokumentů podle oblasti
+- pokud se některé uzavřené rozhodnutí později ukáže jako nevhodné, má se znovu otevřít přímo v příslušném dokumentu místo obnovování obecného `todo.md` backlogu

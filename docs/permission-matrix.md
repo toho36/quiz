@@ -43,18 +43,19 @@ Cíl je přesně určit:
 ### Clerk
 - ověření identity autora
 - ochrana dashboard/create/edit route
-- vydání podkladů pro host bootstrap flow
+- podklad pro serverové rozhodnutí, zda smí vzniknout host bootstrap flow
 
 ### Next.js server vrstva
 - ownership check nad quizzem
 - create/update/publish quiz akcí
 - create room a host claim bootstrap
-- vydání krátkodobých tokenů nebo claim podkladů, pokud budou potřeba
+- vydání krátkodobého jednorázového host claimu pro runtime
 
 ### SpacetimeDB reducers
 - runtime autorita pro roomku
 - finální kontrola host-only a player-only akcí
 - finální kontrola, zda actor patří do roomky
+- direct player join bind, player reconnect token rotace a host takeover pravidla
 - finální kontrola gameplay state a deadline pravidel
 
 ## 4. Permission matrix podle oblasti
@@ -74,26 +75,26 @@ Cíl je přesně určit:
 ### Room management akce
 
 - vytvořit room z quizu
-  - kdo: `author` nebo oprávněný `host`
+  - kdo: `author`
   - kontrola: Clerk + Next.js server
 - claimnout host roli pro roomku
   - kdo: autorizovaný `host`
-  - kontrola: Next.js server bootstrap + SpacetimeDB reducer bind
+  - kontrola: Next.js server bootstrap + SpacetimeDB reducer bind se short-lived single-use claimem
 - ukončit roomku / abort
   - kdo: `host`
   - kontrola: SpacetimeDB reducer
 - reconnect hosta
   - kdo: původně navázaný `host`
-  - kontrola: serverově vydaný claim/rebind mechanismus + reducer
+  - kontrola: nový Next.js-issued host claim + reducer; nejnovější validní rebind přebírá autoritu
 
 ### Player akce
 
 - join room
   - kdo: `player`
-  - kontrola: Next.js join flow nebo reducer, podle finálního flow
+  - kontrola: přímo SpacetimeDB reducer v MVP
 - reconnect player
   - kdo: původní `player`
-  - kontrola: resume token / reconnect secret + reducer bind
+  - kontrola: room-scoped opaque `resume_token` + reducer bind; při úspěchu se token rotuje
 - update display name
   - kdo: v MVP raději jen před startem hry
   - kontrola: reducer + room state check
@@ -139,6 +140,7 @@ Nikdy nesmí rozhodovat klient:
 - host nesmí provádět gameplay akce mimo platný stavový přechod
 - player nesmí měnit cizí submission
 - reconnect nesmí vytvořit druhou nezávislou identitu stejného hráče
+- po úspěšném host/player rebindu stará connection ztrácí oprávnění pro další commandy
 
 ## 7. Doporučený přístup
 
@@ -154,15 +156,17 @@ Nikdy nesmí rozhodovat klient:
 - join flow přímo přes reducer
 - join flow přes Next.js server bootstrap a následný reducer bind
 
-Není zatím finálně rozhodnuto, která varianta bootstrapu bude nejlepší; pro MVP je ale důležité, aby finální runtime kontrola zůstala v reducerech.
+Pro MVP je zvolený direct join přes reducer a host bootstrap přes Next.js server + reducer bind; finální runtime kontrola zůstává v reducerech.
 
 ## 9. Co je vhodné pro MVP
 
 - jeden host pro roomku
 - guest players bez povinného Clerk účtu
+- create room jen pro `author` přes Next.js server
+- host claim jako krátkodobý jednorázový proof
 - late join během aktivní hry zakázaný
 - answer change po přijetí submission zakázaná
-- reconnect přes jednoduchý room-scoped resume mechanismus
+- reconnect přes room-scoped opaque resume token s rotací při úspěšném rebindu
 
 ## 10. Co může počkat na později
 

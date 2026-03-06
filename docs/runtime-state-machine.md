@@ -26,13 +26,16 @@ Tím se oddělí celkový stav roomky od stavu právě hrané otázky.
 
 ### `finished`
 - poslední otázka už doběhla
-- room může zobrazovat finální leaderboard
+- finální `leaderboard` fáze už proběhla
+- room zůstává read-only do `expires_at` a zobrazuje finální leaderboard
 
 ### `aborted`
 - hra byla ukončena hostem nebo systémově přerušena
+- room zůstává read-only do `expires_at`, ale nepovoluje další gameplay akce
 
 ### `expired`
 - room už není aktivní kvůli TTL / lifecycle policy
+- reconnect po `expires_at` se odmítá jako `room_expired`
 
 ## 4. Question phase během `in_progress`
 
@@ -48,13 +51,13 @@ Tím se oddělí celkový stav roomky od stavu právě hrané otázky.
 - zobrazí se správná odpověď a výsledek kola
 
 ### `leaderboard`
-- zobrazí se průběžné pořadí po kole
+- zobrazí se průběžné nebo finální pořadí po kole
 
 ## 5. Doporučené přechody
 
 ### Room lifecycle přechody
 - `lobby -> in_progress` při `start_game`
-- `in_progress -> finished` po posledním leaderboard kroku
+- `in_progress -> finished` po doběhu samostatné finální `leaderboard` fáze poslední otázky
 - `lobby | in_progress -> aborted` při host abortu nebo závažném systémovém ukončení
 - `lobby | finished | aborted -> expired` podle expiry policy
 
@@ -69,6 +72,13 @@ Tím se oddělí celkový stav roomky od stavu právě hrané otázky.
   - pokud existuje další otázka
 - `leaderboard -> finished`
   - pokud další otázka neexistuje
+
+### Expiry policy pro MVP
+- při `create_room` nastavit `expires_at = created_at + 24h`
+- při `start_game` nastavit `expires_at = started_at + 2h` jako fail-safe deadline pro běžící roomku
+- pokud roomka tohoto limitu dosáhne bez normálního dohrání, systém provede `in_progress -> aborted` a hned poté přepíše `expires_at = ended_at + 30m`
+- při `finish_game` nebo `abort_game` přepsat `expires_at = ended_at + 30m`
+- cleanup může proběhnout asynchronně, ale po `expires_at` už reducer nesmí přijmout reconnect ani další gameplay akce
 
 ## 6. Kdo smí přechody spouštět
 
@@ -96,12 +106,22 @@ Finální validace musí být vždy v reduceru.
 - v `lobby`: vrátí se do waiting state
 - v `question_open`: vrátí se do aktuální otázky se serverovým deadlinem
 - v `question_closed | reveal | leaderboard`: vrátí se do právě aktivní fáze bez možnosti dodatečné změny submission
+- v `finished`: do `expires_at` dostane read-only finální leaderboard a svůj finální výsledek
+- v `aborted`: do `expires_at` dostane read-only informaci, že hra byla ukončena
+- v `expired`: reconnect se odmítne
 
 ### Host reconnect
 - má obnovit kontrolu nad roomkou jen přes validní rebind
 - reconnect nesmí vytvořit druhého hosta
+- v `finished` může do `expires_at` zobrazit finální výsledky, ale nesmí znovu otevřít tutéž roomku pro nový běh
 
-## 9. Edge casy
+## 9. MVP persistence policy
+
+- finální výsledky se v MVP neukládají persistentně mimo runtime vrstvu
+- po `finished` nebo `aborted` zůstávají dostupné jen z runtime dat roomky do `expires_at`
+- pokud se později doplní history výsledků, má se zapisovat přes serverovou boundary, ne přímo z klienta
+
+## 10. Edge casy
 
 - submit přesně na hraně deadline
 - host klikne na close otázky současně s auto-close
@@ -109,32 +129,36 @@ Finální validace musí být vždy v reduceru.
 - host se odpojí uprostřed hry
 - room expire během neaktivní nebo rozbité session
 
-## 10. Doporučený přístup
+## 11. Doporučený přístup
 
 - client timer brát jen jako UI indikaci
 - server time a reducer rozhodují o deadline a přijetí submission
 - každá akce se validuje vůči room lifecycle i question phase
 - auto-close a host manual close musí končit ve stejném autoritativním stavu
 
-## 11. Co je vhodné pro MVP
+## 12. Co je vhodné pro MVP
 
 - `lobby`, `in_progress`, `finished`, `aborted`, `expired`
 - `question_open`, `question_closed`, `reveal`, `leaderboard`
 - late join do `in_progress` zakázaný
+- samostatná finální `leaderboard` fáze i po poslední otázce
+- read-only reconnect po `finished` nebo `aborted` jen do `expires_at`
+- žádná persistentní history výsledků mimo runtime vrstvu
 - žádné větvení flow podle typu otázky
 - jednoduché ruční řízení hostem + serverový deadline enforcement
 
-## 12. Co může počkat na později
+## 13. Co může počkat na později
 
 - pause/resume hry
 - warmup / countdown phase
 - spectator-only states
 - host transfer mezi více moderátory
 - jemnější recovery stavy po výpadku infrastruktury
+- persistentní result history a replay recap
 
-## 13. Otevřené otázky
+## 14. Uzavřená MVP rozhodnutí
 
-- Není zatím finálně rozhodnuto, zda `reveal` a `leaderboard` budou vždy oddělené fáze, nebo někdy splývat v jednom UI kroku.
-- Není zatím finálně ověřeno, jak bude v praxi řešen auto-close trigger bez zbytečně chatty synchronizace.
-- Není zatím uzavřeno, jak dlouho má room zůstat v `finished` před přechodem do `expired`.
+- `reveal` a `leaderboard` zůstávají v MVP oddělené fáze.
+- auto-close trigger musí končit stejným reducer přechodem jako host manual close; zdroj triggeru nesmí měnit výsledný stav.
+- room zůstává po `finished` nebo `aborted` 30 minut v read-only režimu a pak přechází do `expired`.
 

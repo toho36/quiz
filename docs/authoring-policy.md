@@ -43,7 +43,11 @@ Cíl je oddělit:
 - publish má být explicitní akce, ne vedlejší efekt běžného autosave
 - server při publish zkontroluje minimální konzistenci quizu
 - create room flow má pro MVP pracovat jen s `published` quizem
-- `draft` lze spustit jen tehdy, pokud se to později vědomě povolí; pro MVP to není doporučeno
+- `draft` quiz se v MVP do runtime roomky nespouští
+
+Rozhodnutí pro MVP:
+- interní testování má používat published quiz a běžnou roomku vytvořenou z frozen snapshotu
+- protože published quiz lze dál upravovat a změny se projeví jen do budoucích room snapshotů, samostatný draft-room flow není pro MVP nutný
 
 ## 5. Validační pravidla
 
@@ -51,6 +55,7 @@ Cíl je oddělit:
 - `title` nesmí být prázdný
 - scoring mode musí být z podporované množiny
 - default time limit musí být v centrálně povoleném rozsahu
+- quiz musí mít při publish 1 až 50 otázek
 
 ### Question
 - `prompt` nesmí být prázdný
@@ -62,9 +67,14 @@ Cíl je oddělit:
 ### Question options
 - každá option musí mít neprázdný text
 - `position` musí být unikátní v rámci otázky
-- `single_choice` musí mít právě jednu správnou option
-- `multiple_choice` musí mít minimálně dvě options
-- přesný požadavek na počet correct options u `multiple_choice` zatím není úplně uzavřený
+- každá otázka může mít maximálně 6 options
+- `single_choice` musí mít 2 až 6 options a právě jednu správnou option
+- `multiple_choice` musí mít 3 až 6 options, alespoň dvě správné options a alespoň jednu nesprávnou option
+
+Důvod pro `multiple_choice` policy:
+- zachovává sémantický rozdíl proti `single_choice`
+- drží `exact_match` scoring přehledný pro hráče i implementaci
+- omezuje payload i mobilní UI složitost při room snapshotu
 
 ## 6. Editační pravidla po publish
 
@@ -87,6 +97,11 @@ Důvod, proč zamknutí není preferované:
 - držet jednoduchý model `quiz` + `question` + `question_option`
 - změny po publish nechat působit jen na další roomky
 
+Explicitní rozhodnutí pro MVP:
+- `quiz_revision` entita se nezavádí
+- publish/re-publish má být jen změna stavu a validační checkpoint, ne tvorba nové persistentní revizní vrstvy
+- pokud později vznikne potřeba rollbacku konkrétní publikované verze nebo auditovatelné publish historie, přidá se `quiz_revision` až tehdy
+
 ### Co by revision model řešil později
 - auditovatelný publish history
 - rollback konkrétní publikované verze
@@ -104,7 +119,8 @@ Důvod, proč zamknutí není preferované:
 - create room jen z `published`
 - bez samostatné `quiz_revision`
 - bez komplexního moderation workflow
-- základní validační limity pro title, prompt, options a time limit
+- explicitní limit 50 otázek na quiz a 6 options na otázku
+- `multiple_choice` s minimálně dvěma správnými options
 - bez authoring collaboration mezi více editory současně
 
 ## 10. Co může počkat na později
@@ -116,12 +132,12 @@ Důvod, proč zamknutí není preferované:
 - audit trail authoring změn
 - jemnější workflow než jen `draft | published | archived`
 
-## 11. Otevřené otázky
+## 11. Uzavřená MVP rozhodnutí
 
-- Není zatím finálně rozhodnuto, zda `multiple_choice` musí mít vždy alespoň dvě správné options, nebo může mít i jednu správnou při více dostupných možnostech.
-- Není zatím finálně uzavřeno, jaké přesné limity mají platit pro max počet otázek a max počet options.
-- Není zatím ověřeno, zda bude dlouhodobě potřeba explicitní `quiz_revision` entita kvůli auditovatelnosti a rollbacku.
-- Není zatím finálně rozhodnuto, zda bude možné vytvořit room i z draftu pro neveřejné interní testování.
+- `quiz_revision` se odkládá až na chvíli, kdy bude potřeba rollback nebo publish history
+- `multiple_choice` vyžaduje alespoň dvě správné options
+- publish vyžaduje explicitní limity 1–50 otázek a max. 6 options na otázku
+- room z `draft` quizu se v MVP nevytváří
 
 ## 12. Vazba na ostatní dokumenty
 

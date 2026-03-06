@@ -30,6 +30,7 @@ Tento dokument navazuje na detailní návrhy v `docs/` a shrnuje cross-cutting t
 ### Platform boundary
 - Clerk je autorita pro author identity
 - Vercel hostuje Next.js aplikaci
+- preview a production používají oddělené Clerk/runtime projekty a oddělené credentials
 - realtime room authority nemá být stavěná na Vercel Functions jako náhradě za persistentní realtime server
 
 ## 3. Hlavní bezpečnostní a návrhová rizika
@@ -82,23 +83,28 @@ Tento dokument navazuje na detailní návrhy v `docs/` a shrnuje cross-cutting t
 - pozdní join do aktivní hry
 - přechod `finished -> expired` během pozdního reconnectu
 
-## 5. Otevřené otázky
+## 5. Stav uzavření hlavních otázek
 
-### Auth a identity
-- Není zatím finálně ověřen přesný formát host claim bootstrapu.
-- Není zatím finálně rozhodnut přesný tvar player resume tokenu a jeho expirace.
-- Není zatím uzavřeno, jak řešit konflikt dvou současných reconnectů stejné identity.
+### Auth a identity (uzavřeno pro MVP)
+- host claim bootstrap = Next.js-issued, room-scoped, signed, single-use proof s `jti` a TTL 60 sekund; raw Clerk token se do runtime vrstvy nepředává
+- player resume token = opaque room-scoped secret, uložený serverově jen jako hash, s explicitní expirací a rotací při každém úspěšném reconnectu
+- konflikt dvou současných reconnectů = první úspěšný commit vyhrává, další použití stejného proofu se odmítá jako stale/replay a stará session ztrácí autoritu
 
 ### Gameplay a scoring
-- Není zatím finálně uzavřena formule `speed_weighted` scoringu.
-- Není zatím finálně rozhodnuto, zda `reveal` a `leaderboard` zůstanou vždy oddělené fáze.
-- Není zatím uzavřeno, zda se v budoucnu připustí partial credit pro `multiple_choice`.
+- `speed_weighted` používá pro MVP lineární serverově měřenou škálu 100 % -> 50 % `base_points` pro správné timed odpovědi.
+- `reveal` a `leaderboard` zůstávají v MVP oddělené fáze; po poslední otázce proběhne ještě finální leaderboard před `finished`.
+- partial credit pro `multiple_choice` nepatří do MVP.
 
 ### Data a provoz
-- Není zatím finálně rozhodnuta reprezentace ordered collections v runtime vrstvě.
-- Není zatím uzavřeno, zda se finální výsledky uloží i persistentně mimo runtime vrstvu.
-- Není zatím uzavřena subscription strategie s ohledem na free-tier a egress limity.
-- Není zatím uzavřeno, zda je dlouhodobě potřeba `quiz_revision` entita.
+- ordered collections v runtime vrstvě jsou pro MVP uzavřené přes explicitní `question_index`, `author_position` a `display_position` na jednotlivých rows.
+- finální výsledky se v MVP neukládají persistentně mimo runtime vrstvu; po `finished` nebo `aborted` zůstávají dostupné jen do `expires_at`.
+- subscription strategie je pro MVP room-scoped, role-specific a postavená na úzkých public projekcích/views kvůli payloadu a egress limitům.
+- `quiz_revision` entita se pro MVP nezavádí; může se vrátit až s rollback/publish history požadavky.
+
+### Deployment a observability (uzavřeno pro MVP)
+- preview a production jsou striktně oddělené na úrovni Clerk konfigurace, runtime projektu/instance i credentials.
+- browser dostává jen veřejný runtime endpoint a room-scoped proof/token materiál pro konkrétní session; privileged runtime credentials a signing secrets zůstávají server-only.
+- minimum observability pro MVP = searchable strukturované logy bootstrap, join/reconnect, lifecycle přechodů a fatálních chyb bez raw secrets nebo raw reconnect proofů.
 
 ## 6. Co je vhodné pro MVP
 
@@ -111,6 +117,8 @@ Tento dokument navazuje na detailní návrhy v `docs/` a shrnuje cross-cutting t
 - jedna accepted submission na hráče a otázku
 - late join během aktivní hry zakázaný
 - bez co-host, spectator a partial credit
+- oddělený non-production runtime pro preview a dedikovaný production runtime
+- minimální strukturované logování bootstrap, join/reconnect a lifecycle chyb bez raw secrets nebo raw reconnect proofů
 
 ## 7. Co může počkat na později
 
