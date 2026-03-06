@@ -27,7 +27,6 @@ Cíl:
 - načtení authoring dashboard dat
 - create room bootstrap
 - host claim bootstrap
-- případné vydání player join bootstrapu, pokud join nepůjde přímo přes reducer
 - případné uložení finálních výsledků mimo runtime vrstvu
 
 ### Přes SpacetimeDB runtime
@@ -45,9 +44,13 @@ Cíl:
 - DTO mají nést jen data nutná pro konkrétní akci
 - klient nikdy neposílá `is_correct`, `awarded_points`, `score_total` ani autoritativní deadline truth
 - command DTO mají být idempotentní tam, kde hrozí retry nebo dvojklik
+- u host gameplay commandů v MVP se retry safety řeší hlavně reducer guardy nad lifecycle/question phase, ne povinným durable idempotency key
 - identity-sensitive payloady mají být room-scoped
 - bootstrap payloady mají být krátkodobé a omezeně znovu použitelné
+- raw Clerk token nebo session cookie se nepředává do SpacetimeDB; host bootstrap má být app-issued proof pro runtime boundary
+- reconnect credential pro guest player má být opaque secret uložený serverově jen jako hash a rotovaný při úspěšném rebindu
 - runtime state payloady mají být úsporné kvůli realtime ergonomii
+- runtime state payloady se mají skládat explicitně po rolích; interní runtime rows se nesmí serializovat klientům `as-is`
 
 ## 5. Doporučené typy kontraktů
 
@@ -58,7 +61,7 @@ Cíl:
 
 ### Server bootstrap DTO
 
-- použití: create room, host claim bootstrap, případný player join bootstrap
+- použití: create room a host claim bootstrap
 - odpovědnost: ověřit authoring/ownership policy a předat minimální podklad pro bezpečný vstup do runtime vrstvy
 
 ### Runtime command DTO
@@ -85,28 +88,38 @@ Validační pravidla: `single_choice` právě jedna correct option, `multiple_ch
 
 ### Room bootstrap DTO
 
-Pole odpovědi: `room_id`, `room_code`, `source_quiz_id`, efektivní room policy přehled pro UI, host claim bootstrap podklad, pokud je součástí flow.
-Otevřená otázka: není zatím finálně rozhodnuto, zda `create_room` rovnou vrací host claim podklad, nebo zda půjde o samostatný krok.
+Pole odpovědi: `room_id`, `room_code`, `source_quiz_id`, efektivní room policy přehled pro UI, `host_claim_token`, `host_claim_expires_at`.
+Doporučení pro MVP: `create_room` vrací initial host claim bootstrap rovnou, aby host nemusel dělat další round-trip před prvním bindem. Pozdější host reconnect si ale vyžádá nový short-lived claim přes samostatný Next.js endpoint.
+
+Rozhodnutí pro MVP mimo auth detaily:
+- standardní `create_room` bootstrap je jen pro `published` quiz
+- runtime room z `draft` quizu se v MVP nevytváří; interní testování má používat published quiz a frozen snapshot boundary
 
 ## 7. Doporučené runtime command DTO oblasti
 
 ### Host claim / rebind DTO
 
 - `room_id` nebo `room_code`
-- krátkodobý server bootstrap proof
-- pomocný transport/session údaj, ne důkaz identity
+- `host_claim_token`
+- volitelný transport/session údaj pro diagnostiku nebo idempotenci, ne důkaz identity
+
+Logický obsah `host_claim_token`: `purpose=host_claim`, `room_id`, `clerk_user_id`, `clerk_session_id`, `jti`, `iat`, `exp`, `v`. Token je podepsaný app-specific bootstrap key, je jednorázový a pro MVP má TTL 60 sekund.
 
 ### Player join DTO
 
 - `room_code`
 - `display_name`
-- případně join bootstrap proof
+- volitelně `client_join_request_id` pro retry-safe UX
+
+Odpověď join flow: `room_id`, `room_player_id`, `resume_token`, `resume_expires_at`. V MVP se player join validuje přímo v reduceru, bez Next.js join bootstrapu.
 
 ### Player reconnect DTO
 
 - `room_id`
 - `room_player_id` nebo ekvivalentní room-scoped identifikátor
-- `resume_token` nebo ekvivalentní rebind proof
+- `resume_token`
+
+`resume_token` je opaque room-scoped secret s vysokou entropií. Runtime drží jen jeho hash a `resume_version`; po každém úspěšném reconnectu vrací nový `resume_token` a starý okamžitě invaliduje.
 
 ### Answer submission DTO
 
@@ -118,18 +131,42 @@ Otevřená otázka: není zatím finálně rozhodnuto, zda `create_room` rovnou 
 
 ## 8. Doporučené runtime state DTO oblasti
 
-### Public room state pro player view
+### Shared room core DTO
 
 - `room_id`, `room_code`, `lifecycle_state`
 - `question_index`, `question_phase`, deadline metadata
+- veřejné policy/feature flags pro aktuální roomku
+- pouze metadata aktivní fáze a aktivní otázky, ne opakované posílání celého frozen snapshotu roomky
+
+### Player room state DTO
+
+- shared room core DTO
 - prompt a display options pro aktuální otázku
-- player-specific submission status
-- leaderboard až po serverově finalizovaném kole
+- player-specific submission status a self-scoped outcome metadata
+- leaderboard až po serverově finalizovaném kole nebo ve `finished`
+- bez jiných hráčů, bez reconnect binding údajů, bez correctness flags před `reveal`
+- žádný per-player roster; player view má zůstat self-scoped i při realtime updates
 
-### Host room state
+### Host room state DTO
 
-- vše z player view plus počty joined players, agregované stavy kola a host-only ovládací metadata
-  Doporučení: correctness flags a neveřejná data neodesílat před `reveal`; neposílat celý runtime snapshot opakovaně, pokud stačí aktivní výřez stavu.
+- shared room core DTO
+- počty joined/connected players
+- agregované stavy kola (např. kolik hráčů už submitnulo)
+- host-only ovládací metadata a povolené přechody
+- per-player přehled až ve chvíli, kdy to odpovídá fázi a není tím porušen reveal boundary
+- během `question_open` preferovat agregované progress metriky před širokým live feedem všech player rows
+
+Rozhodnutí pro MVP:
+- host a player používají oddělené DTO kontrakty nad společným core, ne jednu monolitickou DTO s volitelnými poli
+- host DTO je úzký operační superset player view, ne raw dump všech interních runtime rows
+- pokud SpacetimeDB subscription nemůže bezpečně nebo úsporně vracet požadovaná data přímo, použije se public view/projekce nebo server/client assembly vrstva nad užšími subscribed rows
+- correctness flags, `resume_token_hash`, interní identity bindingy a podobné interní property se do klientských DTO vůbec nedostávají
+
+Pravidla pro minimalizaci realtime payloadu v MVP:
+- subscription hranice mají sledovat access pattern: shared room core, active-question slice, self slice, host aggregates, leaderboard slice
+- phase transition má být hlavní okamžik pro změnu payload shape; neemitovat široké room payloady při každé player akci
+- leaderboard a roster feed se mají aktivovat jen tehdy, když je UI skutečně zobrazuje
+- pokud stejná data nepotřebují oba role-specific pohledy, neposílat je do obou DTO jen kvůli symetrii kontraktu
 
 ## 9. Vazba na ostatní dokumenty
 
@@ -144,7 +181,9 @@ Otevřená otázka: není zatím finálně rozhodnuto, zda `create_room` rovnou 
 - authoring API jen přes Next.js server vrstvu
 - runtime commandy přímo do SpacetimeDB reducerů
 - jednoduché request/response DTO pro authoring
-- jednoduchý host bootstrap a player resume mechanismus
+- player join přímo přes SpacetimeDB reducer
+- `create_room` vrací initial host claim bootstrap
+- krátkodobý jednorázový host bootstrap a rotate-on-use player resume mechanismus
 - bez širokého veřejného API pro třetí strany
 
 ## 11. Co může počkat na později
@@ -155,9 +194,8 @@ Otevřená otázka: není zatím finálně rozhodnuto, zda `create_room` rovnou 
 - jemnější rozlišení host/admin view DTO
 - delta-stream optimalizace nad rámec základního realtime modelu
 
-## 12. Otevřené otázky
+## 12. MVP pravidlo pro host gameplay command idempotenci
 
-- Není zatím finálně rozhodnuto, zda player join v MVP půjde přímo přes reducer, nebo přes Next.js bootstrap.
-- Není zatím finálně ověřen přesný formát host claim bootstrap proofu.
-- Není zatím uzavřeno, jak silnou idempotenci budou potřebovat host gameplay commandy při retry a reconnectu.
-- Není zatím finálně rozhodnuto, jak moc odlišný bude host state DTO od player state DTO.
+- `start_game`, `close_question`, `reveal`, `show_leaderboard`, `next_question` a `finish_game` v MVP nepotřebují durable dedupe storage ani povinný idempotency key pro correctness.
+- Retry safety zajišťují reducer guardy a validní phase/lifecycle transition pravidla; opakovaný command nad už aplikovaným přechodem musí skončit jako safe no-op nebo stale-transition rejection, nikdy ne dvojím provedením efektu.
+- Volitelný `client_request_id` je přípustný jen pro diagnostiku, korelaci logů nebo UX telemetry; durable dedupe nad rámec těchto guardů je odložené až po MVP.
