@@ -4,6 +4,10 @@ import {
   createSpacetimeAuthoringStore,
   type AuthoringSpacetimeClientFactory,
 } from '@/lib/server/authoring-spacetimedb-store';
+import {
+  createSpacetimeRuntimeBootstrapProvisioner,
+  type RuntimeBootstrapProvisioner,
+} from '@/lib/server/runtime-spacetimedb-bootstrap';
 import { createDemoSeedQuizDocuments } from '@/lib/server/demo-seed';
 import { createRoomBootstrapService } from '@/lib/server/room-bootstrap-service';
 import { createRuntimeGameplayService, type AcceptedAnswerSubmission } from '@/lib/server/runtime-gameplay-service';
@@ -13,10 +17,6 @@ import {
   hostRoomStateSchema,
   playerJoinCommandSchema,
   playerRoomStateSchema,
-  runtimeQuestionOptionSnapshotSchema,
-  runtimeQuestionSnapshotSchema,
-  runtimeRoomSchema,
-  type AuthoringQuizDocument,
   type CreateRoomResponse,
   type HostAllowedAction,
   type HostRoomState,
@@ -65,26 +65,18 @@ type RoomSession = {
 type DemoState = {
   roomsByCode: Map<string, RoomSession>;
   guestBindings: Map<string, Map<string, GuestBinding>>;
-  nextRoomNumber: number;
   nextPlayerNumber: number;
   nextClaimNumber: number;
 };
 
 type DemoAppServiceDependencies = {
   authoringClientFactory?: AuthoringSpacetimeClientFactory;
+  runtimeProvisioner?: RuntimeBootstrapProvisioner;
   clock?: DemoClock;
 };
 
 function clone<T>(value: T): T {
   return structuredClone(value);
-}
-
-function addMs(value: string, ms: number) {
-  return new Date(Date.parse(value) + ms).toISOString();
-}
-
-function now(clock: DemoClock) {
-  return clock().toISOString();
 }
 
 function normalizeRoomCode(value: string) {
@@ -95,13 +87,16 @@ function createInitialState(): DemoState {
   return {
     roomsByCode: new Map(),
     guestBindings: new Map(),
-    nextRoomNumber: 1,
     nextPlayerNumber: 1,
     nextClaimNumber: 1,
   };
 }
 
-export function createDemoAppService({ authoringClientFactory, clock = () => new Date() }: DemoAppServiceDependencies = {}) {
+export function createDemoAppService({
+  authoringClientFactory,
+  runtimeProvisioner = createSpacetimeRuntimeBootstrapProvisioner(),
+  clock = () => new Date(),
+}: DemoAppServiceDependencies = {}) {
   const state = createInitialState();
   const runtimeGameplayService = createRuntimeGameplayService({ clock });
   let authoringStore: ReturnType<typeof createSpacetimeAuthoringStore> | null = null;
@@ -140,47 +135,22 @@ export function createDemoAppService({ authoringClientFactory, clock = () => new
     },
     roomProvisioner: {
       async createRoom(input) {
-        const roomId = `room-${state.nextRoomNumber}`;
-        const roomCode = `ROOM${String(state.nextRoomNumber).padStart(2, '0')}`;
-        const createdAt = now(clock);
-        const quiz = await mustQuizDocument(input.sourceQuizId);
-        const room = runtimeRoomSchema.parse({
-          room_id: roomId,
-          room_code: roomCode,
-          source_quiz_id: input.sourceQuizId,
-          lifecycle_state: 'lobby',
-          current_question_index: null,
-          host_binding: { clerk_user_id: input.ownerUserId, host_binding_version: 1 },
-          created_at: createdAt,
-          started_at: null,
-          ended_at: null,
-          expires_at: addMs(createdAt, 2 * 60 * 60 * 1000),
-          room_policy: input.roomPolicy,
-        });
-        state.roomsByCode.set(roomCode, {
+        const bootstrap = await runtimeProvisioner.createRoom(input);
+        state.roomsByCode.set(bootstrap.room.room_code, {
           bootstrap: null,
-          room,
-          questionSnapshots: buildQuestionSnapshots(roomId, quiz),
-          optionSnapshots: buildOptionSnapshots(roomId, quiz),
+          room: bootstrap.room,
+          questionSnapshots: bootstrap.questionSnapshots,
+          optionSnapshots: bootstrap.optionSnapshots,
           questionState: null,
           players: [],
           acceptedSubmissions: [],
           latestOutcomes: {},
           leaderboard: null,
         });
-        state.nextRoomNumber += 1;
-        return { room_id: roomId, room_code: roomCode };
+        return { room_id: bootstrap.room.room_id, room_code: bootstrap.room.room_code };
       },
     },
   });
-
-  async function mustQuizDocument(quizId: string): Promise<AuthoringQuizDocument> {
-    const quiz = await getAuthoringStore().getQuizDocument(quizId);
-    if (!quiz) {
-      throw new NotFoundError(`Quiz ${quizId} was not found`);
-    }
-    return quiz;
-  }
 
   function mustRoomSession(roomCode: string) {
     const session = state.roomsByCode.get(normalizeRoomCode(roomCode));
@@ -543,48 +513,6 @@ export function createDemoAppService({ authoringClientFactory, clock = () => new
       return accepted.acceptedSubmission;
     },
   };
-}
-
-function buildQuestionSnapshots(roomId: string, document: AuthoringQuizDocument) {
-  return document.questions
-    .slice()
-    .sort((left, right) => left.question.position - right.question.position)
-    .map((entry, index) =>
-      runtimeQuestionSnapshotSchema.parse({
-        room_id: roomId,
-        question_index: index,
-        source_question_id: entry.question.question_id,
-        prompt: entry.question.prompt,
-        question_type: entry.question.question_type,
-        evaluation_policy: entry.question.evaluation_policy,
-        base_points: entry.question.base_points,
-        effective_time_limit_seconds: entry.question.time_limit_seconds,
-        shuffle_answers: entry.question.shuffle_answers,
-      }),
-    );
-}
-
-function buildOptionSnapshots(roomId: string, document: AuthoringQuizDocument) {
-  return document.questions
-    .slice()
-    .sort((left, right) => left.question.position - right.question.position)
-    .flatMap((entry, questionIndex) => {
-      const orderedOptions = entry.options.slice().sort((left, right) => left.position - right.position);
-      const displayPositions = entry.question.shuffle_answers
-        ? orderedOptions.map((_, index, all) => all.length - index)
-        : orderedOptions.map((_, index) => index + 1);
-      return orderedOptions.map((option, optionIndex) =>
-        runtimeQuestionOptionSnapshotSchema.parse({
-          room_id: roomId,
-          question_index: questionIndex,
-          source_option_id: option.option_id,
-          author_position: option.position,
-          display_position: displayPositions[optionIndex],
-          text: option.text,
-          is_correct: option.is_correct,
-        }),
-      );
-    });
 }
 
 const globalDemoAppKey = '__quizDemoAppService';
