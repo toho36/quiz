@@ -288,6 +288,8 @@ export type RuntimeRoomPlayer = {
   display_name: string;
   status: RoomPlayerStatus;
   resume_token_hash: string;
+  resume_version: number;
+  resume_expires_at: string;
   joined_at: string;
   last_seen_at: string;
   score_total: number;
@@ -668,6 +670,8 @@ export const runtimeRoomPlayerSchema = createSchema<RuntimeRoomPlayer>((input) =
     display_name: asTrimmedString(record.display_name, 'runtimeRoomPlayer.display_name'),
     status: asEnumValue(record.status, ROOM_PLAYER_STATUSES, 'runtimeRoomPlayer.status'),
     resume_token_hash: asTrimmedString(record.resume_token_hash, 'runtimeRoomPlayer.resume_token_hash'),
+    resume_version: asInteger(record.resume_version, 'runtimeRoomPlayer.resume_version', 1),
+    resume_expires_at: asIsoTimestamp(record.resume_expires_at, 'runtimeRoomPlayer.resume_expires_at'),
     joined_at: asIsoTimestamp(record.joined_at, 'runtimeRoomPlayer.joined_at'),
     last_seen_at: asIsoTimestamp(record.last_seen_at, 'runtimeRoomPlayer.last_seen_at'),
     score_total: asInteger(record.score_total, 'runtimeRoomPlayer.score_total', 0),

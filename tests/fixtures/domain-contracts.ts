@@ -130,6 +130,8 @@ export const runtimeRoomPlayerFixture = {
   display_name: 'Player One',
   status: 'connected',
   resume_token_hash: 'hash',
+  resume_version: 1,
+  resume_expires_at: '2026-03-06T22:00:05.000Z',
   joined_at: '2026-03-06T10:00:05.000Z',
   last_seen_at: '2026-03-06T10:00:20.000Z',
   score_total: 100,

@@ -98,6 +98,66 @@ describe('runtime gameplay service', () => {
     expect(finished.questionState).toBeNull();
   });
 
+  test('replaces the lobby expiry with the active-game expiry when gameplay starts', () => {
+    const service = createRuntimeGameplayService({
+      clock: () => new Date('2026-03-06T10:00:10.000Z'),
+    });
+
+    const room = createLobbyRoom();
+
+    expect(room.expires_at).toBe('2026-03-07T10:00:00.000Z');
+
+    const started = service.startGame({
+      room,
+      questionSnapshots: [runtimeQuestionSnapshotFixture],
+    });
+
+    expect(started.room.expires_at).toBe('2026-03-06T12:00:10.000Z');
+  });
+
+  test('aborts lobby and in-progress rooms into a read-only post-game lifecycle', () => {
+    const service = createRuntimeGameplayService({
+      clock: () => new Date('2026-03-06T10:05:00.000Z'),
+    });
+
+    const abortedLobby = service.abortGame({ room: createLobbyRoom() });
+
+    expect(abortedLobby.lifecycle_state).toBe('aborted');
+    expect(abortedLobby.current_question_index).toBeNull();
+    expect(abortedLobby.started_at).toBeNull();
+    expect(abortedLobby.ended_at).toBe('2026-03-06T10:05:00.000Z');
+    expect(abortedLobby.expires_at).toBe('2026-03-06T10:35:00.000Z');
+
+    const started = service.startGame({
+      room: createLobbyRoom(),
+      questionSnapshots: [runtimeQuestionSnapshotFixture],
+    });
+    const abortedActive = service.abortGame({ room: started.room });
+
+    expect(abortedActive.lifecycle_state).toBe('aborted');
+    expect(abortedActive.current_question_index).toBeNull();
+    expect(abortedActive.started_at).toBe('2026-03-06T10:05:00.000Z');
+    expect(abortedActive.ended_at).toBe('2026-03-06T10:05:00.000Z');
+    expect(abortedActive.expires_at).toBe('2026-03-06T10:35:00.000Z');
+  });
+
+  test('rejects aborting rooms that are already read-only', () => {
+    const service = createRuntimeGameplayService({
+      clock: () => new Date('2026-03-06T10:05:00.000Z'),
+    });
+
+    expect(() =>
+      service.abortGame({
+        room: {
+          ...runtimeRoomFixture,
+          lifecycle_state: 'finished' as const,
+          ended_at: '2026-03-06T10:04:00.000Z',
+          expires_at: '2026-03-06T10:34:00.000Z',
+        },
+      }),
+    ).toThrow(InvalidOperationError);
+  });
+
   test('rejects late join attempts after gameplay has started', () => {
     const service = createRuntimeGameplayService({
       clock: () => new Date('2026-03-06T10:00:15.000Z'),
@@ -112,6 +172,85 @@ describe('runtime gameplay service', () => {
         resumeTokenHash: 'resume-hash-2',
       }),
     ).toThrow(InvalidOperationError);
+  });
+
+  test('rotates reconnect tokens and rejects replayed or expired resume tokens', () => {
+    let currentTime = new Date('2026-03-06T10:00:05.000Z');
+    const service = createRuntimeGameplayService({
+      clock: () => currentTime,
+    });
+
+    const joined = service.joinPlayer({
+      room: createLobbyRoom(),
+      players: [],
+      roomPlayerId: 'player-1',
+      displayName: 'Player One',
+      resumeTokenHash: 'resume-hash-1',
+    });
+
+    expect(joined.resume_version).toBe(1);
+    expect(joined.resume_expires_at).toBe('2026-03-06T22:00:05.000Z');
+
+    currentTime = new Date('2026-03-06T10:15:00.000Z');
+
+    const reconnected = service.reconnectPlayer({
+      room: createLobbyRoom(),
+      player: joined,
+      command: {
+        room_id: 'room-1',
+        room_player_id: 'player-1',
+        resume_token: 'opaque-resume-token',
+      },
+      presentedResumeTokenHash: 'resume-hash-1',
+      nextResumeTokenHash: 'resume-hash-2',
+    });
+
+    expect(reconnected.resume_token_hash).toBe('resume-hash-2');
+    expect(reconnected.resume_version).toBe(2);
+    expect(reconnected.resume_expires_at).toBe('2026-03-06T22:15:00.000Z');
+    expect(reconnected.last_seen_at).toBe('2026-03-06T10:15:00.000Z');
+
+    let replayError: unknown;
+    try {
+      service.reconnectPlayer({
+        room: createLobbyRoom(),
+        player: reconnected,
+        command: {
+          room_id: 'room-1',
+          room_player_id: 'player-1',
+          resume_token: 'opaque-resume-token',
+        },
+        presentedResumeTokenHash: 'resume-hash-1',
+        nextResumeTokenHash: 'resume-hash-3',
+      });
+    } catch (error) {
+      replayError = error;
+    }
+
+    expect(replayError).toBeInstanceOf(InvalidOperationError);
+    expect((replayError as Error).message).toBe('stale_resume_token');
+
+    currentTime = new Date('2026-03-06T22:15:00.001Z');
+
+    let expiredError: unknown;
+    try {
+      service.reconnectPlayer({
+        room: createLobbyRoom(),
+        player: reconnected,
+        command: {
+          room_id: 'room-1',
+          room_player_id: 'player-1',
+          resume_token: 'rotated-resume-token',
+        },
+        presentedResumeTokenHash: 'resume-hash-2',
+        nextResumeTokenHash: 'resume-hash-3',
+      });
+    } catch (error) {
+      expiredError = error;
+    }
+
+    expect(expiredError).toBeInstanceOf(InvalidOperationError);
+    expect((expiredError as Error).message).toBe('expired_resume_token');
   });
 
   test('rejects question phase transitions for a question state from another room', () => {

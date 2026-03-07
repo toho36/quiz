@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from 'node:crypto';
 import type { AuthenticatedAuthor } from '@/lib/server/authoring-service';
 import { createAuthoringService } from '@/lib/server/authoring-service';
 import { createDemoSeedQuizDocuments } from '@/lib/server/demo-seed';
@@ -9,6 +10,7 @@ import {
   authoringQuizDocumentSchema,
   hostRoomStateSchema,
   playerJoinCommandSchema,
+  playerReconnectCommandSchema,
   playerRoomStateSchema,
   runtimeQuestionOptionSnapshotSchema,
   runtimeQuestionSnapshotSchema,
@@ -33,6 +35,8 @@ export const demoAuthorActor: AuthenticatedAuthor = {
 
 type DemoClock = () => Date;
 
+const LOBBY_ROOM_TTL_MS = 24 * 60 * 60 * 1000;
+
 type DemoQuizSummary = {
   quiz_id: string;
   title: string;
@@ -42,9 +46,12 @@ type DemoQuizSummary = {
 };
 
 type GuestBinding = {
+  roomId: string;
   roomCode: string;
   roomPlayerId: string;
   resumeToken: string;
+  resumeExpiresAt: string;
+  resumeVersion: number;
 };
 
 type RoomSession = {
@@ -86,6 +93,14 @@ function now(clock: DemoClock) {
 
 function normalizeRoomCode(value: string) {
   return value.trim().toUpperCase();
+}
+
+function generateResumeToken() {
+  return randomBytes(32).toString('base64url');
+}
+
+function hashResumeToken(value: string) {
+  return createHash('sha256').update(value).digest('base64url');
 }
 
 function createInitialState(): DemoState {
@@ -131,7 +146,6 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
         const roomId = `room-${state.nextRoomNumber}`;
         const roomCode = `ROOM${String(state.nextRoomNumber).padStart(2, '0')}`;
         const createdAt = now(clock);
-        const quiz = mustQuizDocument(input.sourceQuizId);
         const room = runtimeRoomSchema.parse({
           room_id: roomId,
           room_code: roomCode,
@@ -142,14 +156,14 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
           created_at: createdAt,
           started_at: null,
           ended_at: null,
-          expires_at: addMs(createdAt, 2 * 60 * 60 * 1000),
+          expires_at: addMs(createdAt, LOBBY_ROOM_TTL_MS),
           room_policy: input.roomPolicy,
         });
         state.roomsByCode.set(roomCode, {
           bootstrap: null,
           room,
-          questionSnapshots: buildQuestionSnapshots(roomId, quiz),
-          optionSnapshots: buildOptionSnapshots(roomId, quiz),
+          questionSnapshots: [],
+          optionSnapshots: [],
           questionState: null,
           players: [],
           acceptedSubmissions: [],
@@ -178,9 +192,33 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
     return session;
   }
 
+  function mustRoomSessionById(roomId: string) {
+    const session = [...state.roomsByCode.values()].find((candidate) => candidate.room.room_id === roomId);
+    if (!session) {
+      throw new NotFoundError(`Room ${roomId} was not found`);
+    }
+    return session;
+  }
+
   function requireRoomHost(session: RoomSession, actor: AuthenticatedAuthor) {
     if (session.room.host_binding.clerk_user_id !== actor.clerkUserId) {
       throw new AuthorizationError('Only the room owner can manage this host flow');
+    }
+  }
+
+  function assertRoomStillReadable(session: RoomSession) {
+    if (session.room.lifecycle_state === 'expired') {
+      throw new InvalidOperationError('Expired rooms are no longer readable');
+    }
+    if (
+      (session.room.lifecycle_state === 'finished' || session.room.lifecycle_state === 'aborted') &&
+      Date.parse(now(clock)) > Date.parse(session.room.expires_at)
+    ) {
+      session.room = runtimeRoomSchema.parse({
+        ...session.room,
+        lifecycle_state: 'expired',
+      });
+      throw new InvalidOperationError('Expired rooms are no longer readable');
     }
   }
 
@@ -216,6 +254,17 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
       .sort((left, right) => left.display_position - right.display_position);
   }
 
+  function createGuestBinding(session: RoomSession, player: RuntimeRoomPlayer, resumeToken: string): GuestBinding {
+    return {
+      roomId: session.room.room_id,
+      roomCode: session.room.room_code,
+      roomPlayerId: player.room_player_id,
+      resumeToken,
+      resumeExpiresAt: player.resume_expires_at,
+      resumeVersion: player.resume_version,
+    };
+  }
+
   function buildSharedRoom(session: RoomSession) {
     return {
       room_id: session.room.room_id,
@@ -230,7 +279,7 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
 
   function buildActiveQuestion(session: RoomSession): PlayerRoomState['active_question'] {
     const question = getCurrentQuestionSnapshot(session);
-    if (!question || session.room.lifecycle_state === 'lobby') {
+    if (!question || session.room.lifecycle_state !== 'in_progress') {
       return null;
     }
     return {
@@ -248,7 +297,7 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
   function buildPlayerSubmissionStatus(session: RoomSession, roomPlayerId: string): PlayerRoomState['self']['submission_status'] {
     const currentQuestionIndex = session.room.current_question_index;
     if (currentQuestionIndex === null) {
-      return session.room.lifecycle_state === 'finished' && session.latestOutcomes[roomPlayerId] ? 'accepted' : 'not_submitted';
+      return session.latestOutcomes[roomPlayerId] ? 'accepted' : 'not_submitted';
     }
     const hasAcceptedSubmission = session.acceptedSubmissions.some(
       (submission) => submission.room_player_id === roomPlayerId && submission.question_index === currentQuestionIndex,
@@ -268,20 +317,20 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
 
   function buildHostAllowedActions(session: RoomSession): HostAllowedAction[] {
     if (session.room.lifecycle_state === 'lobby') {
-      return ['start_game'];
+      return ['start_game', 'abort_game'];
     }
-    if (!session.questionState) {
+    if (session.room.lifecycle_state !== 'in_progress' || !session.questionState) {
       return [];
     }
     switch (session.questionState.phase) {
       case 'question_open':
-        return ['close_question'];
+        return ['close_question', 'abort_game'];
       case 'question_closed':
-        return ['reveal'];
+        return ['reveal', 'abort_game'];
       case 'reveal':
-        return ['show_leaderboard'];
+        return ['show_leaderboard', 'abort_game'];
       case 'leaderboard':
-        return hasNextQuestion(session) ? ['next_question'] : ['finish_game'];
+        return hasNextQuestion(session) ? ['next_question', 'abort_game'] : ['finish_game', 'abort_game'];
     }
   }
 
@@ -336,6 +385,10 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
       });
     },
 
+    async saveQuizDocument(input: { actor: AuthenticatedAuthor; document: AuthoringQuizDocument }) {
+      return authoringService.saveQuizDocument(input);
+    },
+
     async publishQuiz({ actor, quizId }: { actor: AuthenticatedAuthor; quizId: string }) {
       return authoringService.publishQuiz({ actor, quizId });
     },
@@ -352,6 +405,7 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
         return null;
       }
       requireRoomHost(session, actor);
+      assertRoomStillReadable(session);
       return {
         bootstrap: session.bootstrap,
         state: hostRoomStateSchema.parse({
@@ -384,8 +438,13 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
       requireRoomHost(session, input.actor);
       switch (input.action) {
         case 'start_game': {
-          const started = runtimeGameplayService.startGame({ room: session.room, questionSnapshots: getQuestionSnapshotsForRoom(session) });
+          const quiz = mustQuizDocument(session.room.source_quiz_id);
+          const questionSnapshots = buildQuestionSnapshots(session.room.room_id, quiz);
+          const optionSnapshots = buildOptionSnapshots(session.room.room_id, quiz);
+          const started = runtimeGameplayService.startGame({ room: session.room, questionSnapshots });
           session.room = started.room;
+          session.questionSnapshots = questionSnapshots;
+          session.optionSnapshots = optionSnapshots;
           session.questionState = started.questionState;
           session.acceptedSubmissions = [];
           session.latestOutcomes = {};
@@ -450,8 +509,13 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
           }
           break;
         }
-        case 'abort_game':
-          throw new InvalidOperationError('Abort flow is out of scope for this initial application slice');
+        case 'abort_game': {
+          session.room = runtimeGameplayService.abortGame({ room: session.room });
+          session.questionState = null;
+          session.acceptedSubmissions = [];
+          session.leaderboard = null;
+          break;
+        }
       }
       return this.getHostRoomState({ actor: input.actor, roomCode: input.roomCode });
     },
@@ -465,17 +529,45 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
       }
       const session = mustRoomSession(normalizedRoomCode);
       const roomPlayerId = `player-${state.nextPlayerNumber}`;
-      const resumeToken = `resume-${state.nextPlayerNumber}-${input.guestSessionId}`;
+      const resumeToken = generateResumeToken();
       const joinedPlayer = runtimeGameplayService.joinPlayer({
         room: session.room,
         players: session.players,
         roomPlayerId,
         displayName: command.display_name,
-        resumeTokenHash: `hash:${resumeToken}`,
+        resumeTokenHash: hashResumeToken(resumeToken),
       });
       session.players = [...session.players, joinedPlayer];
       state.nextPlayerNumber += 1;
-      const binding = { roomCode: normalizedRoomCode, roomPlayerId, resumeToken };
+      const binding = createGuestBinding(session, joinedPlayer, resumeToken);
+      setGuestBinding(input.guestSessionId, binding);
+      return binding;
+    },
+
+    reconnectPlayer(input: { guestSessionId: string; roomId: string; roomPlayerId: string; resumeToken: string }) {
+      const command = playerReconnectCommandSchema.parse({
+        room_id: input.roomId,
+        room_player_id: input.roomPlayerId,
+        resume_token: input.resumeToken,
+      });
+      const session = mustRoomSessionById(command.room_id);
+      assertRoomStillReadable(session);
+      const playerIndex = session.players.findIndex((entry) => entry.room_player_id === command.room_player_id);
+      if (playerIndex === -1) {
+        throw new NotFoundError(`Player ${command.room_player_id} was not found in room ${command.room_id}`);
+      }
+
+      const nextResumeToken = generateResumeToken();
+      const updatedPlayer = runtimeGameplayService.reconnectPlayer({
+        room: session.room,
+        player: session.players[playerIndex],
+        command,
+        presentedResumeTokenHash: hashResumeToken(command.resume_token),
+        nextResumeTokenHash: hashResumeToken(nextResumeToken),
+      });
+
+      session.players = session.players.map((player, index) => (index === playerIndex ? updatedPlayer : player));
+      const binding = createGuestBinding(session, updatedPlayer, nextResumeToken);
       setGuestBinding(input.guestSessionId, binding);
       return binding;
     },
@@ -486,8 +578,12 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
         return null;
       }
       const session = mustRoomSession(binding.roomCode);
+      assertRoomStillReadable(session);
       const player = session.players.find((entry) => entry.room_player_id === binding.roomPlayerId);
       if (!player) {
+        return null;
+      }
+      if (binding.resumeVersion !== player.resume_version) {
         return null;
       }
       return playerRoomStateSchema.parse({
@@ -519,6 +615,14 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
         throw new AuthorizationError('Join the room before submitting answers');
       }
       const session = mustRoomSession(binding.roomCode);
+      assertRoomStillReadable(session);
+      const player = session.players.find((entry) => entry.room_player_id === binding.roomPlayerId);
+      if (!player) {
+        throw new AuthorizationError('Join the room before submitting answers');
+      }
+      if (binding.resumeVersion !== player.resume_version) {
+        throw new AuthorizationError('Player session has been replaced by a newer reconnect');
+      }
       const question = getCurrentQuestionSnapshot(session);
       if (!session.questionState || !question) {
         throw new InvalidOperationError('No active question is available');
@@ -528,7 +632,7 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
         questionState: session.questionState,
         questionSnapshot: question,
         optionSnapshots: getCurrentOptionSnapshots(session),
-        roomPlayerId: binding.roomPlayerId,
+        roomPlayerId: player.room_player_id,
         command: answerSubmissionCommandSchema.parse({
           room_id: session.room.room_id,
           question_index: question.question_index,

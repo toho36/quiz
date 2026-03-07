@@ -2,6 +2,7 @@ import {
   answerSelectionSchema,
   answerSubmissionCommandSchema,
   answerSubmissionRecordSchema,
+  playerReconnectCommandSchema,
   runtimeQuestionOptionSnapshotSchema,
   runtimeQuestionSnapshotSchema,
   runtimeQuestionStateSchema,
@@ -20,6 +21,7 @@ import { InvalidOperationError } from '@/lib/server/service-errors';
 
 const ACTIVE_ROOM_TTL_MS = 2 * 60 * 60 * 1000;
 const POST_GAME_TTL_MS = 30 * 60 * 1000;
+const MAX_RESUME_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 
 export type AcceptedAnswerSubmission = Pick<AnswerSubmissionCommand, 'room_id' | 'question_index' | 'selected_option_ids'> & {
   room_player_id: string;
@@ -52,11 +54,49 @@ export function createRuntimeGameplayService({ clock = () => new Date() }: Runti
       display_name: input.displayName,
       status: 'connected',
       resume_token_hash: input.resumeTokenHash,
+      resume_version: 1,
+      resume_expires_at: resolveResumeTokenExpiry(room, joinedAt),
       joined_at: joinedAt,
       last_seen_at: joinedAt,
       score_total: 0,
       correct_count: 0,
       join_order: nextJoinOrder(players),
+    });
+  }
+
+  function reconnectPlayer(input: {
+    room: RuntimeRoom;
+    player: RuntimeRoomPlayer;
+    command: { room_id: string; room_player_id: string; resume_token: string };
+    presentedResumeTokenHash: string;
+    nextResumeTokenHash: string;
+  }) {
+    const room = runtimeRoomSchema.parse(input.room);
+    const player = runtimeRoomPlayerSchema.parse(input.player);
+    const command = playerReconnectCommandSchema.parse(input.command);
+    const reconnectedAt = now(clock);
+
+    assertRoomActive(room, reconnectedAt);
+    if (player.room_id !== room.room_id) {
+      throw new InvalidOperationError('Player reconnect must stay room-scoped');
+    }
+    if (command.room_id !== room.room_id || command.room_player_id !== player.room_player_id) {
+      throw new InvalidOperationError('Player reconnect must target the bound room player');
+    }
+    if (Date.parse(reconnectedAt) > Date.parse(player.resume_expires_at)) {
+      throw new InvalidOperationError('expired_resume_token');
+    }
+    if (player.resume_token_hash !== input.presentedResumeTokenHash) {
+      throw new InvalidOperationError('stale_resume_token');
+    }
+
+    return runtimeRoomPlayerSchema.parse({
+      ...player,
+      status: 'connected',
+      resume_token_hash: input.nextResumeTokenHash,
+      resume_version: player.resume_version + 1,
+      resume_expires_at: resolveResumeTokenExpiry(room, reconnectedAt),
+      last_seen_at: reconnectedAt,
     });
   }
 
@@ -123,6 +163,23 @@ export function createRuntimeGameplayService({ clock = () => new Date() }: Runti
       ...questionState,
       phase: 'leaderboard',
       leaderboard_shown_at: shownAt,
+    });
+  }
+
+  function abortGame(input: { room: RuntimeRoom }) {
+    const room = runtimeRoomSchema.parse(input.room);
+    const endedAt = now(clock);
+    assertRoomActive(room, endedAt);
+    if (room.lifecycle_state !== 'lobby' && room.lifecycle_state !== 'in_progress') {
+      throw new InvalidOperationError('Only lobby or in-progress rooms can be aborted');
+    }
+
+    return runtimeRoomSchema.parse({
+      ...room,
+      lifecycle_state: 'aborted',
+      current_question_index: null,
+      ended_at: endedAt,
+      expires_at: addDuration(endedAt, POST_GAME_TTL_MS),
     });
   }
 
@@ -294,10 +351,12 @@ export function createRuntimeGameplayService({ clock = () => new Date() }: Runti
 
   return {
     joinPlayer,
+    reconnectPlayer,
     startGame,
     closeQuestion,
     revealQuestion,
     showLeaderboard,
+    abortGame,
     advanceAfterLeaderboard,
     acceptSubmission,
     finalizeQuestion,
@@ -454,6 +513,11 @@ function nextJoinOrder(players: RuntimeRoomPlayer[]) {
 
 function addDuration(timestamp: string, milliseconds: number) {
   return new Date(Date.parse(timestamp) + milliseconds).toISOString();
+}
+
+function resolveResumeTokenExpiry(room: RuntimeRoom, issuedAt: string) {
+  const remainingRoomMs = Math.max(0, Date.parse(room.expires_at) - Date.parse(issuedAt));
+  return addDuration(issuedAt, Math.min(MAX_RESUME_TOKEN_TTL_MS, remainingRoomMs));
 }
 
 function now(clock: () => Date) {
