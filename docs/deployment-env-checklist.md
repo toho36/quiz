@@ -37,6 +37,24 @@ Neřeší konkrétní CI/CD skripty ani produkční konfiguraci; cílem je ujasn
 
 ## 4. Rozdělení env proměnných
 
+### Aktuálně vynucený kontrakt v repozitáři
+
+Aktuální implementace v `lib/env/public.ts`, `lib/env/server.ts` a `lib/env/shared.ts` má po Wave 1 tento explicitní kontrakt:
+
+| Proměnná | Scope | Stav v aktuálním buildu | Požadavek |
+| --- | --- | --- | --- |
+| `NEXT_PUBLIC_APP_ENV` | public | **povinná** | musí být jedna z hodnot `local`, `preview`, `production` |
+| `NEXT_PUBLIC_APP_URL` | public | **povinná** | musí být absolutní URL aktuálního deploymentu |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | public | volitelná | publishable key pro browser-only Clerk klienta |
+| `NEXT_PUBLIC_SPACETIME_ENDPOINT` | public | volitelná | pokud je nastavená, musí být absolutní URL veřejného connect endpointu |
+| `CLERK_SECRET_KEY` | server-only | volitelná v této vlně | server secret pro backend/SSR operace, nikdy ne do browseru |
+| `SPACETIME_ADMIN_TOKEN` | server-only | volitelná v této vlně | privileged runtime/bootstrap credential, nikdy ne do browseru |
+| `RUNTIME_BOOTSTRAP_SIGNING_KEY` | server-only | volitelná v této vlně | signing secret pro server-issued bootstrap/claim materiál |
+
+- `bun run build` failne hned, pokud chybí `NEXT_PUBLIC_APP_ENV` nebo `NEXT_PUBLIC_APP_URL`.
+- Ověřený safe local build command je: `NEXT_PUBLIC_APP_ENV=local NEXT_PUBLIC_APP_URL=http://localhost:3000 bun run build`.
+- `.env.example` je pouze template; reálné preview/production hodnoty patří do environment managementu platformy (např. Vercel), ne do committovaných `.env*` souborů s tajemstvími.
+
 ### Public env proměnné
 Smí nést jen data bezpečná pro browser:
 - veřejné URL
@@ -60,6 +78,23 @@ Musí zůstat jen na serveru:
 Doporučení:
 - nic citlivého neexportovat do `NEXT_PUBLIC_*`
 - browser bundle brát jako veřejný prostor bez důvěry
+
+### Minimální nastavení podle deployment prostředí
+
+#### Local development
+- `NEXT_PUBLIC_APP_ENV=local`
+- `NEXT_PUBLIC_APP_URL` nastav na lokální absolutní URL webu (typicky `http://localhost:3000`)
+- používej jen non-production Clerk/runtime hodnoty; pokud jsou potřeba secrets, patří do lokálního server-only env souboru nebo shellu, ne do sdíleného template
+
+#### Preview
+- `NEXT_PUBLIC_APP_ENV=preview`
+- `NEXT_PUBLIC_APP_URL` musí odpovídat skutečné preview deployment URL
+- preview používá vlastní non-production publishable key, server secrets a runtime credentials oddělené od production
+
+#### Production
+- `NEXT_PUBLIC_APP_ENV=production`
+- `NEXT_PUBLIC_APP_URL` musí být kanonická produkční URL aplikace
+- production deployment smí číst jen production server secrets a production runtime credentials
 
 ## 5. Boundary podle systému
 
@@ -94,7 +129,7 @@ Doporučení:
 ### Web vrstva
 - route handlery a server actions, které dělají create room / host bootstrap / authoring ownership check, smějí pracovat se server-only runtime credentials
 - žádný privileged runtime token nesmí vstoupit do klientských komponent ani veřejných API payloadů
-- environment-specific callback a base URL konfigurace je povinná pro local, preview i production
+- `NEXT_PUBLIC_APP_ENV` a `NEXT_PUBLIC_APP_URL` jsou povinné pro local, preview i production build; každé prostředí musí mít vlastní hodnoty odpovídající reálnému deploymentu
 
 ### Observability
 - minimum pro MVP = strukturované logy pro `create_room`, host claim issuance/validation failure, player join/reconnect, `start_game`, `close_question`, `finish_game`, `abort_game` a fatální chyby web/runtime vrstvy
