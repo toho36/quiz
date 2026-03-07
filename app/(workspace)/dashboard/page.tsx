@@ -1,4 +1,3 @@
-import type { Route } from 'next';
 import Link from 'next/link';
 import { createRoomAction, publishQuizAction, signInDemoAuthorAction, signOutDemoAuthorAction } from '@/app/actions';
 import { PageShell } from '@/components/page-shell';
@@ -86,7 +85,7 @@ export default async function DashboardPage({
             </dl>
             <div className="mt-4 flex flex-wrap gap-3">
               <Button asChild className="h-10 rounded-full px-4" variant="outline">
-                <Link href={`/authoring?quizId=${quiz.quiz_id}` as Route}>Edit quiz</Link>
+                <Link href={{ pathname: '/authoring', query: { quizId: quiz.quiz_id } }}>Edit quiz</Link>
               </Button>
               {quiz.status === 'draft' ? (
                 <form action={publishQuizAction}>
@@ -119,7 +118,7 @@ export default async function DashboardPage({
                   {room.room_code} · {room.lifecycle_state} · {room.joined_player_count} player(s)
                 </span>
                 <Button asChild className="h-auto px-0 text-sky-200" variant="link">
-                  <Link href={`/host?roomCode=${room.room_code}` as Route}>Open host room →</Link>
+                  <Link href={{ pathname: '/host', query: { roomCode: room.room_code } }}>Open host room →</Link>
                 </Button>
               </li>
             ))}

@@ -1,14 +1,14 @@
-import type { Route } from 'next';
 import Link from 'next/link';
 import { hostRoomAction, signInDemoAuthorAction } from '@/app/actions';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
+import type { HostAllowedAction } from '@/lib/shared/contracts';
 import { getDemoAppService } from '@/lib/server/demo-app-service';
 import { getDemoAuthorActor } from '@/lib/server/demo-session';
 
 export const dynamic = 'force-dynamic';
 
-const HOST_ACTION_LABELS = {
+const HOST_ACTION_LABELS: Record<HostAllowedAction, string> = {
   start_game: 'Start game',
   close_question: 'Close question',
   reveal: 'Reveal answer',
@@ -16,7 +16,7 @@ const HOST_ACTION_LABELS = {
   next_question: 'Open next question',
   finish_game: 'Finish game',
   abort_game: 'Abort game',
-} as const;
+};
 
 function getValue(value: string | string[] | undefined) {
   return typeof value === 'string' ? value : undefined;
@@ -80,7 +80,10 @@ export default async function HostPage({
                   <span>
                     {room.room_code} · {room.lifecycle_state} · {room.joined_player_count} player(s)
                   </span>
-                  <Link className="text-sky-300 hover:text-sky-200" href={`/host?roomCode=${room.room_code}` as Route}>
+                  <Link
+                    className="text-sky-300 hover:text-sky-200"
+                    href={{ pathname: '/host', query: { roomCode: room.room_code } }}
+                  >
                     Open host room →
                   </Link>
                 </li>
@@ -107,7 +110,13 @@ export default async function HostPage({
               <div>
                 <dt className="text-slate-500">Join URL</dt>
                 <dd>
-                  <Link className="text-sky-300 hover:text-sky-200" href={`/join?roomCode=${details.state.shared_room.room_code}` as Route}>
+                  <Link
+                    className="text-sky-300 hover:text-sky-200"
+                    href={{
+                      pathname: '/join',
+                      query: { roomCode: details.state.shared_room.room_code },
+                    }}
+                  >
                     Open join flow for {details.state.shared_room.room_code}
                   </Link>
                 </dd>

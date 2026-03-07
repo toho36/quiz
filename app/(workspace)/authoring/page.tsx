@@ -1,4 +1,3 @@
-import type { Route } from 'next';
 import Link from 'next/link';
 import { publishQuizAction, saveQuizDetailsAction, signInDemoAuthorAction } from '@/app/actions';
 import { PageShell } from '@/components/page-shell';
@@ -71,7 +70,7 @@ export default async function AuthoringPage({
             className="rounded-full px-4"
             variant={quiz.quiz_id === selectedQuizId ? 'default' : 'outline'}
           >
-            <Link href={`/authoring?quizId=${quiz.quiz_id}` as Route}>{quiz.title}</Link>
+            <Link href={{ pathname: '/authoring', query: { quizId: quiz.quiz_id } }}>{quiz.title}</Link>
           </Button>
         ))}
       </div>

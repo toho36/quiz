@@ -1,4 +1,3 @@
-import type { Route } from 'next';
 import Link from 'next/link';
 import { submitAnswerAction } from '@/app/actions';
 import { PageShell } from '@/components/page-shell';
@@ -49,7 +48,10 @@ export default async function PlayPage({
           <p className="text-sm text-slate-300">
             No player session is bound to {roomCode} yet. Use the join flow to create a room-scoped player identity before playing.
           </p>
-          <Link className="mt-4 inline-flex text-sm font-medium text-sky-300 hover:text-sky-200" href={`/join?roomCode=${roomCode}` as Route}>
+          <Link
+            className="mt-4 inline-flex text-sm font-medium text-sky-300 hover:text-sky-200"
+            href={{ pathname: '/join', query: { roomCode } }}
+          >
             Go to join flow →
           </Link>
         </SectionCard>
