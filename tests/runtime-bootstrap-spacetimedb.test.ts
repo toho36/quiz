@@ -1,10 +1,46 @@
 /// <reference types="bun-types" />
 
-import { describe, expect, test } from 'bun:test';
-import { createSpacetimeRuntimeBootstrapProvisioner } from '@/lib/server/runtime-spacetimedb-bootstrap';
+import { describe, expect, mock, test } from 'bun:test';
+
+async function loadRuntimeBootstrapModule() {
+  mock.module('server-only', () => ({}));
+  mock.module('spacetimedb', () => {
+    class MockDbConnectionImpl {}
+    class MockDbConnectionBuilder {
+      withUri() { return this; }
+      withDatabaseName() { return this; }
+      withToken() { return this; }
+      onConnect() { return this; }
+      onConnectError() { return this; }
+      onDisconnect() { return this; }
+      build() { return {}; }
+    }
+    const t = {
+      string: () => ({}),
+      u32: () => ({}),
+      bool: () => ({}),
+      option: (_value: unknown) => ({}),
+      array: (_value: unknown) => ({}),
+      object: (_name: string, shape: unknown) => ({ shape }),
+    };
+    return {
+      DbConnectionBuilder: MockDbConnectionBuilder,
+      DbConnectionImpl: MockDbConnectionImpl,
+      procedureSchema: (name: string, args: unknown, returns: unknown) => ({ name, args, returns }),
+      procedures: (...definitions: Array<{ name: string }>) =>
+        Object.fromEntries(definitions.map((definition) => [definition.name, definition])),
+      reducers: () => ({ reducersType: { reducers: {} } }),
+      schema: () => ({ schemaType: { tables: {} } }),
+      t,
+    };
+  });
+
+  return import('@/lib/server/runtime-spacetimedb-bootstrap');
+}
 
 describe('SpacetimeDB runtime bootstrap adapter', () => {
   test('parses a bootstrap_room payload into shared runtime snapshots and disconnects the client', async () => {
+    const { createSpacetimeRuntimeBootstrapProvisioner } = await loadRuntimeBootstrapModule();
     let disconnected = false;
     const provisioner = createSpacetimeRuntimeBootstrapProvisioner({
       clientFactory: async () => ({
@@ -21,7 +57,7 @@ describe('SpacetimeDB runtime bootstrap adapter', () => {
                 created_at: '2026-03-07T14:00:00.000Z',
                 started_at: undefined,
                 ended_at: undefined,
-                expires_at: '2026-03-07T16:00:00.000Z',
+                expires_at: '2026-03-08T14:00:00.000Z',
                 room_policy: {
                   scoring_mode: 'speed_weighted',
                   question_time_limit_seconds: 30,
@@ -75,6 +111,7 @@ describe('SpacetimeDB runtime bootstrap adapter', () => {
 
     expect(result.room.current_question_index).toBeNull();
     expect(result.room.started_at).toBeNull();
+    expect(result.room.expires_at).toBe('2026-03-08T14:00:00.000Z');
     expect(result.questionSnapshots[0]?.effective_time_limit_seconds).toBeNull();
     expect(result.optionSnapshots[0]?.display_position).toBe(2);
     expect(disconnected).toBe(true);

@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
 
 import { afterEach, describe, expect, mock, test } from 'bun:test';
-import { isValidElement, type ReactNode } from 'react';
+import { isValidElement } from 'react';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
 import { Badge } from '@/components/ui/badge';

@@ -254,7 +254,7 @@ export const bootstrapRoom = quizModule.procedure(
       const roomId = ctx.newUuidV7().toString();
       const roomCode = createUniqueRoomCode(tx, ctx.random);
       const createdAt = ctx.timestamp.toDate().toISOString();
-      const expiresAt = new Date(Date.parse(createdAt) + 2 * 60 * 60 * 1000).toISOString();
+      const expiresAt = new Date(Date.parse(createdAt) + 24 * 60 * 60 * 1000).toISOString();
       const roomPolicy = createRuntimeRoomPolicy(quiz);
       const room: StoredRuntimeRoomRow = {
         room_id: roomId,

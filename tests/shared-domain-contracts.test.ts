@@ -81,6 +81,14 @@ describe('shared domain contracts', () => {
     expect(result.success).toBe(false);
   });
 
+  test('rejects duplicate authoring positions for questions and options', () => {
+    const invalid = structuredClone(publishedQuizDocumentFixture) as unknown as AuthoringQuizDocument;
+    invalid.questions[1].question.position = invalid.questions[0].question.position;
+    invalid.questions[0].options[1].position = invalid.questions[0].options[0].position;
+
+    expect(authoringQuizDocumentSchema.safeParse(invalid).success).toBe(false);
+  });
+
   test('accepts create-room bootstrap and host claim claims fixtures', () => {
     expect(createRoomResponseSchema.safeParse(createRoomResponseFixture).success).toBe(true);
     expect(hostClaimCommandSchema.safeParse(hostClaimCommandFixture).success).toBe(true);

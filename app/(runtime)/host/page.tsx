@@ -9,6 +9,8 @@ import { SectionCard } from '@/components/section-card';
 import { Button } from '@/components/ui/button';
 import { getAppOperationalReadiness, getAppService } from '@/lib/server/app-service';
 import { CLERK_SIGN_IN_PATH, getProtectedAuthorState } from '@/lib/server/author-auth';
+import { ensureDemoHostSessionId } from '@/lib/server/demo-session';
+import { AuthorizationError } from '@/lib/server/service-errors';
 import type { HostAllowedAction } from '@/lib/shared/contracts';
 
 export const dynamic = 'force-dynamic';
@@ -44,10 +46,28 @@ export default async function HostPage({
   }
 
   const actor = authorState.actor;
+  const hostSessionId = await ensureDemoHostSessionId();
   const readiness = getAppOperationalReadiness();
   const app = getAppService();
   const rooms = app.listActiveRooms(actor);
-  const details = selectedRoomCode ? app.findHostRoomDetails({ actor, roomCode: selectedRoomCode }) : null;
+  let pageError = error;
+  let details = null;
+
+  if (selectedRoomCode) {
+    try {
+      details = app.findHostRoomDetails({
+        actor,
+        roomCode: selectedRoomCode,
+        transportSessionId: hostSessionId,
+      });
+    } catch (hostError) {
+      if (hostError instanceof AuthorizationError) {
+        pageError ??= hostError.message;
+      } else {
+        throw hostError;
+      }
+    }
+  }
 
   return (
     <PageShell
@@ -55,9 +75,9 @@ export default async function HostPage({
       title="Host room"
       description="Run room lifecycle actions from the existing runtime gameplay service and share the room code with players joining the play flow."
     >
-      {(notice || error) && (
-        <SectionCard title={error ? 'Host action blocked' : 'Room updated'} eyebrow={error ? 'Needs attention' : 'Server action'}>
-          <p className="text-sm text-slate-300">{error ?? notice}</p>
+      {(notice || pageError) && (
+        <SectionCard title={pageError ? 'Host action blocked' : 'Room updated'} eyebrow={pageError ? 'Needs attention' : 'Server action'}>
+          <p className="text-sm text-slate-300">{pageError ?? notice}</p>
         </SectionCard>
       )}
 

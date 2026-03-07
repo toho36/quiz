@@ -2,6 +2,7 @@ import {
   answerSelectionSchema,
   answerSubmissionCommandSchema,
   answerSubmissionRecordSchema,
+  playerReconnectCommandSchema,
   runtimeQuestionOptionSnapshotSchema,
   runtimeQuestionSnapshotSchema,
   runtimeQuestionStateSchema,
@@ -10,6 +11,7 @@ import {
   type AnswerSubmissionCommand,
   type AnswerSubmissionRecord,
   type LeaderboardEntry,
+  type PlayerReconnectCommand,
   type RuntimeQuestionOptionSnapshot,
   type RuntimeQuestionSnapshot,
   type RuntimeQuestionState,
@@ -60,6 +62,47 @@ export function createRuntimeGameplayService({ clock = () => new Date() }: Runti
     });
   }
 
+  function reconnectPlayer(input: {
+    room: RuntimeRoom;
+    players: RuntimeRoomPlayer[];
+    command: PlayerReconnectCommand;
+    generateResumeToken: () => string;
+    hashResumeToken: (token: string) => string;
+  }) {
+    const room = runtimeRoomSchema.parse(input.room);
+    const players = input.players.map((player) => runtimeRoomPlayerSchema.parse(player));
+    const command = playerReconnectCommandSchema.parse(input.command);
+    const reconnectedAt = now(clock);
+
+    assertReconnectableRoom(room, reconnectedAt);
+    if (command.room_id !== room.room_id) {
+      throw new InvalidOperationError('Reconnect must target the active room');
+    }
+
+    const player = players.find((entry) => entry.room_player_id === command.room_player_id);
+    if (!player) {
+      throw new InvalidOperationError('Reconnect requires a known room-scoped player');
+    }
+    if (input.hashResumeToken(command.resume_token) !== player.resume_token_hash) {
+      throw new InvalidOperationError('Stale resume tokens are rejected');
+    }
+
+    const nextResumeToken = input.generateResumeToken();
+    const updatedPlayer = runtimeRoomPlayerSchema.parse({
+      ...player,
+      resume_token_hash: input.hashResumeToken(nextResumeToken),
+      last_seen_at: reconnectedAt,
+      status: 'connected',
+    });
+
+    return {
+      player: updatedPlayer,
+      updatedPlayers: players.map((entry) => (entry.room_player_id === updatedPlayer.room_player_id ? updatedPlayer : entry)),
+      resumeToken: nextResumeToken,
+      resumeExpiresAt: room.expires_at,
+    };
+  }
+
   function startGame(input: { room: RuntimeRoom; questionSnapshots: RuntimeQuestionSnapshot[] }) {
     const room = runtimeRoomSchema.parse(input.room);
     const questionSnapshots = input.questionSnapshots.map((snapshot) => runtimeQuestionSnapshotSchema.parse(snapshot));
@@ -85,6 +128,22 @@ export function createRuntimeGameplayService({ clock = () => new Date() }: Runti
       }),
       questionState: openQuestionState(firstQuestion, startedAt),
     };
+  }
+
+  function abortGame(input: { room: RuntimeRoom; endedAt?: string }) {
+    const room = runtimeRoomSchema.parse(input.room);
+    const endedAt = input.endedAt ?? now(clock);
+    assertRoomActive(room, endedAt);
+    if (room.lifecycle_state !== 'lobby' && room.lifecycle_state !== 'in_progress') {
+      throw new InvalidOperationError('Only lobby or in-progress rooms can be aborted');
+    }
+
+    return runtimeRoomSchema.parse({
+      ...room,
+      lifecycle_state: 'aborted',
+      ended_at: endedAt,
+      expires_at: addDuration(endedAt, POST_GAME_TTL_MS),
+    });
   }
 
   function closeQuestion(input: { room: RuntimeRoom; questionState: RuntimeQuestionState }) {
@@ -294,7 +353,9 @@ export function createRuntimeGameplayService({ clock = () => new Date() }: Runti
 
   return {
     joinPlayer,
+    reconnectPlayer,
     startGame,
+    abortGame,
     closeQuestion,
     revealQuestion,
     showLeaderboard,
@@ -344,6 +405,10 @@ function assertRoomActive(room: RuntimeRoom, nowIso: string) {
   if (Date.parse(nowIso) > Date.parse(room.expires_at) || room.lifecycle_state === 'expired') {
     throw new InvalidOperationError('Expired rooms reject gameplay actions');
   }
+}
+
+function assertReconnectableRoom(room: RuntimeRoom, nowIso: string) {
+  assertRoomActive(room, nowIso);
 }
 
 function assertQuestionTransition(

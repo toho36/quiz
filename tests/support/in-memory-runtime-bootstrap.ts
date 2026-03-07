@@ -10,8 +10,13 @@ import {
   type AuthoringQuizDocument,
 } from '@/lib/shared/contracts';
 
+type InMemoryRuntimeBootstrapProvisionerOptions = {
+  clock?: () => Date;
+};
+
 export function createInMemoryRuntimeBootstrapProvisioner(
   documents: AuthoringQuizDocument[] = createDemoSeedQuizDocuments(),
+  { clock = () => new Date('2026-03-06T12:00:00.000Z') }: InMemoryRuntimeBootstrapProvisionerOptions = {},
 ): RuntimeBootstrapProvisioner {
   const storedDocuments = new Map(documents.map((document) => {
     const parsed = cloneDocument(document);
@@ -29,6 +34,7 @@ export function createInMemoryRuntimeBootstrapProvisioner(
       const roomId = `room-${nextRoomNumber}`;
       const roomCode = `ROOM${String(nextRoomNumber).padStart(2, '0')}`;
       nextRoomNumber += 1;
+      const createdAt = clock().toISOString();
 
       const room = runtimeRoomSchema.parse({
         room_id: roomId,
@@ -37,10 +43,10 @@ export function createInMemoryRuntimeBootstrapProvisioner(
         lifecycle_state: 'lobby',
         current_question_index: null,
         host_binding: { clerk_user_id: ownerUserId, host_binding_version: 1 },
-        created_at: '2026-03-06T12:00:00.000Z',
+        created_at: createdAt,
         started_at: null,
         ended_at: null,
-        expires_at: '2026-03-06T14:00:00.000Z',
+        expires_at: new Date(Date.parse(createdAt) + 24 * 60 * 60 * 1000).toISOString(),
         room_policy: roomPolicy,
       });
 

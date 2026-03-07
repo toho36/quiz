@@ -19,10 +19,24 @@ const ORIGINAL_CONSOLE_ERROR = console.error;
 const protectedActor = { clerkUserId: 'user-1', clerkSessionId: 'session-1' };
 
 type CreateRoomInput = { actor: typeof protectedActor; quizId: string };
-type PerformHostActionInput = { actor: typeof protectedActor; roomCode: string; action: HostAllowedAction };
+type ClaimHostInput = { actor: typeof protectedActor; roomCode: string; hostClaimToken: string; transportSessionId: string };
+type PerformHostActionInput = { actor: typeof protectedActor; roomCode: string; action: HostAllowedAction; transportSessionId: string };
+type SaveQuestionInput = {
+  actor: typeof protectedActor;
+  quizId: string;
+  questionId: string;
+  prompt: string;
+  questionType: string;
+  basePoints: number;
+  timeLimitSeconds?: number;
+  shuffleAnswers?: boolean;
+  options: Array<{ optionId: string; text: string; isCorrect: boolean }>;
+};
 
-let mockedCreateRoom = async (_input: CreateRoomInput) => ({ room_code: 'ABCD12' });
+let mockedCreateRoom = async (_input: CreateRoomInput) => ({ room_code: 'ABCD12', host_claim_token: 'claim-token' });
+let mockedClaimHost = (_input: ClaimHostInput) => {};
 let mockedPerformHostAction = (_input: PerformHostActionInput) => {};
+let mockedSaveQuestion = async (_input: SaveQuestionInput) => ({ questions: [] });
 let mockedRequireProtectedAuthorActor = async () => protectedActor;
 let mockedReadiness = {
   authoring: { isConfigured: false, missingKeys: ['SPACETIME_ADMIN_TOKEN'] },
@@ -36,8 +50,60 @@ let consoleErrorMock = mock(() => {});
 let actionsModulePromise: Promise<typeof import('@/app/actions')> | undefined;
 const actionsModulePath = require.resolve('../app/actions.ts');
 
+function installSpacetimeDbMock() {
+  class MockDbConnectionImpl {}
+
+  class MockDbConnectionBuilder {
+    constructor(..._args: unknown[]) {}
+
+    withUri() {
+      return this;
+    }
+
+    withDatabaseName() {
+      return this;
+    }
+
+    withToken() {
+      return this;
+    }
+
+    onConnect() {
+      return this;
+    }
+
+    onConnectError() {
+      return this;
+    }
+
+    onDisconnect() {
+      return this;
+    }
+
+    build() {
+      return {};
+    }
+  }
+
+  mock.module('spacetimedb', () => ({
+    DbConnectionBuilder: MockDbConnectionBuilder,
+    DbConnectionImpl: MockDbConnectionImpl,
+    procedureSchema: () => ({}),
+    procedures: () => ({}),
+    reducers: () => ({ reducersType: { reducers: {} } }),
+    schema: () => ({ schemaType: { tables: {} } }),
+    t: new Proxy(
+      {},
+      {
+        get: (_target, property) => (...args: unknown[]) => ({ property, args }),
+      },
+    ),
+  }));
+}
+
 function installMocks() {
   mock.module('server-only', () => ({}));
+  installSpacetimeDbMock();
   mock.module('next/navigation', () => ({
     redirect(location: string) {
       throw new RedirectSignal(location);
@@ -47,11 +113,20 @@ function installMocks() {
     getAppOperationalReadiness: () => mockedReadiness,
     getAppService: () => ({
       createRoom: (input: CreateRoomInput) => mockedCreateRoom(input),
+      claimHost: (input: ClaimHostInput) => mockedClaimHost(input),
       performHostAction: (input: PerformHostActionInput) => mockedPerformHostAction(input),
+      saveQuestion: (input: SaveQuestionInput) => mockedSaveQuestion(input),
     }),
   }));
   mock.module('@/lib/server/author-auth', () => ({
     requireProtectedAuthorActor: () => mockedRequireProtectedAuthorActor(),
+  }));
+  mock.module('@/lib/server/demo-session', () => ({
+    ensureDemoHostSessionId: async () => 'host-session-1',
+    ensureDemoGuestSessionId: async () => 'guest-session-1',
+    getDemoPlayerBinding: async () => null,
+    setDemoPlayerBinding: async () => {},
+    clearDemoPlayerBinding: async () => {},
   }));
 }
 
@@ -68,9 +143,15 @@ function parseRedirectLocation(location: string) {
   return new URL(location, 'https://example.test');
 }
 
-function createFormData(entries: Record<string, string>) {
+function createFormData(entries: Record<string, string | string[]>) {
   const formData = new FormData();
   for (const [key, value] of Object.entries(entries)) {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        formData.append(key, item);
+      }
+      continue;
+    }
     formData.set(key, value);
   }
   return formData;
@@ -78,8 +159,10 @@ function createFormData(entries: Record<string, string>) {
 
 afterEach(() => {
   actionsModulePromise = undefined;
-  mockedCreateRoom = async (_input: CreateRoomInput) => ({ room_code: 'ABCD12' });
+  mockedCreateRoom = async (_input: CreateRoomInput) => ({ room_code: 'ABCD12', host_claim_token: 'claim-token' });
+  mockedClaimHost = (_input: ClaimHostInput) => {};
   mockedPerformHostAction = (_input: PerformHostActionInput) => {};
+  mockedSaveQuestion = async (_input: SaveQuestionInput) => ({ questions: [] });
   mockedRequireProtectedAuthorActor = async () => protectedActor;
   mockedReadiness = {
     authoring: { isConfigured: false, missingKeys: ['SPACETIME_ADMIN_TOKEN'] },
@@ -137,6 +220,7 @@ describe('protected action failure handling', () => {
     expect(JSON.parse(loggedMessage)).toEqual({
       event: 'host.create_room_failed',
       environment: 'preview',
+      deploymentId: null,
       errorName: 'Error',
       errorMessage: 'bootstrap failed for [redacted] and [redacted] via [redacted]',
       metadata: { actorUserId: 'user-1', quizId: 'quiz-1' },
@@ -170,5 +254,42 @@ describe('protected action failure handling', () => {
     expect(redirectUrl.pathname).toBe('/host');
     expect(redirectUrl.searchParams.get('roomCode')).toBe('ABCD12');
     expect(redirectUrl.searchParams.get('error')).toBe('Host controls are unavailable until the room is ready.');
+  });
+
+  test('preserves known authoring validation errors in the redirect message', async () => {
+    const { saveQuestionAction } = await loadActionsModule();
+    consoleErrorMock = mock(() => {});
+    console.error = consoleErrorMock as typeof console.error;
+    mockedSaveQuestion = async () => {
+      throw new InvalidOperationError('single_choice questions must have exactly one correct option');
+    };
+
+    let redirectError: RedirectSignal | undefined;
+    try {
+      await saveQuestionAction(
+        createFormData({
+          quizId: 'quiz-1',
+          questionId: 'question-1',
+          prompt: 'Updated prompt',
+          questionType: 'single_choice',
+          basePoints: '100',
+          timeLimitSeconds: '30',
+          shuffleAnswers: 'true',
+          optionId: ['option-1', 'option-2'],
+          'optionText:option-1': 'Answer A',
+          'optionText:option-2': 'Answer B',
+          'optionCorrect:option-1': 'on',
+          'optionCorrect:option-2': 'on',
+        }),
+      );
+    } catch (error) {
+      redirectError = error as RedirectSignal;
+    }
+
+    expect(redirectError).toBeInstanceOf(RedirectSignal);
+    const redirectUrl = parseRedirectLocation(redirectError!.location);
+    expect(redirectUrl.pathname).toBe('/authoring');
+    expect(redirectUrl.searchParams.get('quizId')).toBe('quiz-1');
+    expect(redirectUrl.searchParams.get('error')).toBe('single_choice questions must have exactly one correct option');
   });
 });

@@ -1,9 +1,9 @@
 import Link from 'next/link';
-import { submitAnswerAction } from '@/app/actions';
+import { reconnectRoomAction, submitAnswerAction } from '@/app/actions';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
 import { getAppService } from '@/lib/server/app-service';
-import { getDemoGuestSessionId } from '@/lib/server/demo-session';
+import { getDemoGuestSessionId, getDemoPlayerBinding } from '@/lib/server/demo-session';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,6 +27,7 @@ export default async function PlayPage({
     getDemoGuestSessionId(),
   ]);
   const roomCode = rawRoomCode.toUpperCase();
+  const storedBinding = await getDemoPlayerBinding(roomCode);
   const state = guestSessionId ? getAppService().findPlayerRoomState({ guestSessionId, roomCode }) : null;
   const notice = getValue(resolvedSearchParams.notice);
   const error = getValue(resolvedSearchParams.error);
@@ -45,15 +46,31 @@ export default async function PlayPage({
 
       {!state ? (
         <SectionCard title="Join this room first" eyebrow="Room-scoped binding">
-          <p className="text-sm text-slate-300">
-            No player session is bound to {roomCode} yet. Use the join flow to create a room-scoped player identity before playing.
-          </p>
-          <Link
-            className="mt-4 inline-flex text-sm font-medium text-sky-300 hover:text-sky-200"
-            href={{ pathname: '/join', query: { roomCode } }}
-          >
-            Go to join flow →
-          </Link>
+          {storedBinding ? (
+            <>
+              <p className="text-sm text-slate-300">
+                A stored player credential was found for {roomCode}. Reconnect to resume the same room-scoped player identity with a rotated token.
+              </p>
+              <form action={reconnectRoomAction} className="mt-4">
+                <input name="roomCode" type="hidden" value={roomCode} />
+                <button className="rounded-full bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950" type="submit">
+                  Reconnect player session
+                </button>
+              </form>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-slate-300">
+                No player session is bound to {roomCode} yet. Use the join flow to create a room-scoped player identity before playing.
+              </p>
+              <Link
+                className="mt-4 inline-flex text-sm font-medium text-sky-300 hover:text-sky-200"
+                href={{ pathname: '/join', query: { roomCode } }}
+              >
+                Go to join flow →
+              </Link>
+            </>
+          )}
         </SectionCard>
       ) : (
         <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
