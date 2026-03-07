@@ -1,10 +1,10 @@
 import Link from 'next/link';
-import { createRoomAction, publishQuizAction, signInDemoAuthorAction, signOutDemoAuthorAction } from '@/app/actions';
+import { createRoomAction, publishQuizAction } from '@/app/actions';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
 import { Button } from '@/components/ui/button';
+import { CLERK_SIGN_IN_PATH, getProtectedAuthorState } from '@/lib/server/author-auth';
 import { getDemoAppService } from '@/lib/server/demo-app-service';
-import { getDemoAuthorActor } from '@/lib/server/demo-session';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,32 +19,39 @@ export default async function DashboardPage({
 }: {
   searchParams: DashboardSearchParams;
 }) {
-  const [actor, resolvedSearchParams] = await Promise.all([getDemoAuthorActor(), searchParams]);
+  const [authorState, resolvedSearchParams] = await Promise.all([getProtectedAuthorState(), searchParams]);
   const notice = getValue(resolvedSearchParams.notice);
   const error = getValue(resolvedSearchParams.error);
 
-  if (!actor) {
+  if (authorState.status !== 'authenticated') {
     return (
       <PageShell
         eyebrow="Dashboard"
         title="Author dashboard is guarded"
-        description="This route stays behind a server-owned demo author session so authoring and room bootstrap actions never depend on client-only state."
+        description="This route now expects Clerk-backed server auth before protected authoring or runtime bootstrap actions can run."
       >
-        <SectionCard title="Sign in to continue" eyebrow="Demo author">
-          <p className="text-sm text-muted-foreground">Use the lightweight demo author session to reach the authoring and host flows.</p>
-          <form action={signInDemoAuthorAction} className="mt-4">
-            <input name="next" type="hidden" value="/dashboard" />
-            <Button className="h-10 rounded-full px-4" type="submit">
-              Continue as demo author
-            </Button>
-          </form>
+        <SectionCard title="Clerk integration required" eyebrow="Protected author flow">
+          <p className="text-sm text-muted-foreground">
+            {authorState.status === 'setup-required' ? authorState.message : 'Sign in with Clerk to continue.'}
+          </p>
+          {authorState.status === 'unauthenticated' ? (
+            <div className="mt-4">
+              <Button asChild className="h-10 rounded-full px-4">
+                <Link href={CLERK_SIGN_IN_PATH}>Open sign-in</Link>
+              </Button>
+            </div>
+          ) : null}
+          {authorState.status === 'setup-required' && authorState.missingEnvKeys.length > 0 ? (
+            <p className="mt-3 text-sm text-muted-foreground">Missing env: {authorState.missingEnvKeys.join(', ')}</p>
+          ) : null}
         </SectionCard>
       </PageShell>
     );
   }
 
+  const actor = authorState.actor;
   const app = getDemoAppService();
-  const quizzes = app.listQuizSummaries(actor);
+  const quizzes = await app.listQuizSummaries(actor);
   const rooms = app.listActiveRooms(actor);
 
   return (
@@ -63,11 +70,6 @@ export default async function DashboardPage({
         <Button asChild className="h-10 rounded-full px-4" variant="outline">
           <Link href="/authoring">Open authoring</Link>
         </Button>
-        <form action={signOutDemoAuthorAction}>
-          <Button className="h-10 rounded-full px-4" type="submit" variant="outline">
-            Exit demo session
-          </Button>
-        </form>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">

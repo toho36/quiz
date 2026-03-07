@@ -1,13 +1,13 @@
 import Link from 'next/link';
-import { publishQuizAction, saveQuizDetailsAction, signInDemoAuthorAction } from '@/app/actions';
+import { publishQuizAction, saveQuizDetailsAction } from '@/app/actions';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { CLERK_SIGN_IN_PATH, getProtectedAuthorState } from '@/lib/server/author-auth';
 import { getDemoAppService } from '@/lib/server/demo-app-service';
-import { getDemoAuthorActor } from '@/lib/server/demo-session';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,31 +22,39 @@ export default async function AuthoringPage({
 }: {
   searchParams: AuthoringSearchParams;
 }) {
-  const [actor, resolvedSearchParams] = await Promise.all([getDemoAuthorActor(), searchParams]);
+  const [authorState, resolvedSearchParams] = await Promise.all([getProtectedAuthorState(), searchParams]);
   const notice = getValue(resolvedSearchParams.notice);
   const error = getValue(resolvedSearchParams.error);
 
-  if (!actor) {
+  if (authorState.status !== 'authenticated') {
     return (
       <PageShell
         eyebrow="Authoring"
-        title="Authoring requires the demo author session"
-        description="Quiz edits and publish actions stay on the Next.js server boundary, so this workspace remains guarded even in the demo flow."
+        title="Authoring requires Clerk-backed auth"
+        description="Quiz edits and publish actions stay on the Next.js server boundary, so this workspace now blocks until the Clerk-backed author guard is wired."
       >
-        <SectionCard title="Sign in to edit quizzes" eyebrow="Guard">
-          <form action={signInDemoAuthorAction} className="mt-2">
-            <input name="next" type="hidden" value="/authoring" />
-            <Button className="h-10 rounded-full px-4" type="submit">
-              Continue as demo author
-            </Button>
-          </form>
+        <SectionCard title="Clerk integration required" eyebrow="Guard">
+          <p className="text-sm text-muted-foreground">
+            {authorState.status === 'setup-required' ? authorState.message : 'Sign in with Clerk to edit quizzes.'}
+          </p>
+          {authorState.status === 'unauthenticated' ? (
+            <div className="mt-4">
+              <Button asChild className="h-10 rounded-full px-4">
+                <Link href={CLERK_SIGN_IN_PATH}>Open sign-in</Link>
+              </Button>
+            </div>
+          ) : null}
+          {authorState.status === 'setup-required' && authorState.missingEnvKeys.length > 0 ? (
+            <p className="mt-3 text-sm text-muted-foreground">Missing env: {authorState.missingEnvKeys.join(', ')}</p>
+          ) : null}
         </SectionCard>
       </PageShell>
     );
   }
 
+  const actor = authorState.actor;
   const app = getDemoAppService();
-  const quizzes = app.listQuizSummaries(actor);
+  const quizzes = await app.listQuizSummaries(actor);
   const selectedQuizId = getValue(resolvedSearchParams.quizId) ?? quizzes[0]?.quiz_id;
   const document = selectedQuizId ? await app.loadQuizDocument({ actor, quizId: selectedQuizId }) : null;
 

@@ -1,12 +1,15 @@
 import type { AuthenticatedAuthor } from '@/lib/server/authoring-service';
 import { createAuthoringService } from '@/lib/server/authoring-service';
+import {
+  createSpacetimeAuthoringStore,
+  type AuthoringSpacetimeClientFactory,
+} from '@/lib/server/authoring-spacetimedb-store';
 import { createDemoSeedQuizDocuments } from '@/lib/server/demo-seed';
 import { createRoomBootstrapService } from '@/lib/server/room-bootstrap-service';
 import { createRuntimeGameplayService, type AcceptedAnswerSubmission } from '@/lib/server/runtime-gameplay-service';
 import { AuthorizationError, InvalidOperationError, NotFoundError } from '@/lib/server/service-errors';
 import {
   answerSubmissionCommandSchema,
-  authoringQuizDocumentSchema,
   hostRoomStateSchema,
   playerJoinCommandSchema,
   playerRoomStateSchema,
@@ -60,7 +63,6 @@ type RoomSession = {
 };
 
 type DemoState = {
-  quizzes: Map<string, AuthoringQuizDocument>;
   roomsByCode: Map<string, RoomSession>;
   guestBindings: Map<string, Map<string, GuestBinding>>;
   nextRoomNumber: number;
@@ -69,6 +71,7 @@ type DemoState = {
 };
 
 type DemoAppServiceDependencies = {
+  authoringClientFactory?: AuthoringSpacetimeClientFactory;
   clock?: DemoClock;
 };
 
@@ -90,7 +93,6 @@ function normalizeRoomCode(value: string) {
 
 function createInitialState(): DemoState {
   return {
-    quizzes: new Map(createDemoSeedQuizDocuments().map((document) => [document.quiz.quiz_id, clone(document)])),
     roomsByCode: new Map(),
     guestBindings: new Map(),
     nextRoomNumber: 1,
@@ -99,20 +101,30 @@ function createInitialState(): DemoState {
   };
 }
 
-export function createDemoAppService({ clock = () => new Date() }: DemoAppServiceDependencies = {}) {
+export function createDemoAppService({ authoringClientFactory, clock = () => new Date() }: DemoAppServiceDependencies = {}) {
   const state = createInitialState();
   const runtimeGameplayService = createRuntimeGameplayService({ clock });
+  let authoringStore: ReturnType<typeof createSpacetimeAuthoringStore> | null = null;
+
+  function getAuthoringStore() {
+    if (!authoringStore) {
+      authoringStore = createSpacetimeAuthoringStore({
+        clientFactory: authoringClientFactory,
+        seedDocuments: createDemoSeedQuizDocuments(),
+      });
+    }
+
+    return authoringStore;
+  }
 
   const authoringService = createAuthoringService({
     clock,
     quizStore: {
       async getQuizDocument(quizId) {
-        return clone(state.quizzes.get(quizId) ?? null);
+        return getAuthoringStore().quizStore.getQuizDocument(quizId);
       },
       async saveQuizDocument(document) {
-        const parsed = authoringQuizDocumentSchema.parse(document);
-        state.quizzes.set(parsed.quiz.quiz_id, clone(parsed));
-        return clone(parsed);
+        return getAuthoringStore().quizStore.saveQuizDocument(document);
       },
     },
   });
@@ -131,7 +143,7 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
         const roomId = `room-${state.nextRoomNumber}`;
         const roomCode = `ROOM${String(state.nextRoomNumber).padStart(2, '0')}`;
         const createdAt = now(clock);
-        const quiz = mustQuizDocument(input.sourceQuizId);
+        const quiz = await mustQuizDocument(input.sourceQuizId);
         const room = runtimeRoomSchema.parse({
           room_id: roomId,
           room_code: roomCode,
@@ -162,8 +174,8 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
     },
   });
 
-  function mustQuizDocument(quizId: string) {
-    const quiz = state.quizzes.get(quizId);
+  async function mustQuizDocument(quizId: string): Promise<AuthoringQuizDocument> {
+    const quiz = await getAuthoringStore().getQuizDocument(quizId);
     if (!quiz) {
       throw new NotFoundError(`Quiz ${quizId} was not found`);
     }
@@ -293,17 +305,8 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
   }
 
   return {
-    listQuizSummaries(actor: AuthenticatedAuthor): DemoQuizSummary[] {
-      return [...state.quizzes.values()]
-        .filter((document) => document.quiz.owner_user_id === actor.clerkUserId)
-        .sort((left, right) => left.quiz.updated_at.localeCompare(right.quiz.updated_at) * -1)
-        .map((document) => ({
-          quiz_id: document.quiz.quiz_id,
-          title: document.quiz.title,
-          status: document.quiz.status,
-          question_count: document.questions.length,
-          updated_at: document.quiz.updated_at,
-        }));
+    async listQuizSummaries(actor: AuthenticatedAuthor): Promise<DemoQuizSummary[]> {
+      return getAuthoringStore().listQuizSummaries(actor);
     },
 
     listActiveRooms(actor: AuthenticatedAuthor) {

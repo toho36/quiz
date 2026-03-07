@@ -10,7 +10,7 @@ describe('initial application flow smoke', () => {
       clock: () => new Date('2026-03-06T12:00:00.000Z'),
     });
 
-    const draftQuiz = app.listQuizSummaries(demoAuthorActor).find((quiz) => quiz.status === 'draft');
+    const draftQuiz = (await app.listQuizSummaries(demoAuthorActor)).find((quiz) => quiz.status === 'draft');
 
     expect(draftQuiz).toBeDefined();
 
@@ -51,7 +51,7 @@ describe('initial application flow smoke', () => {
       clock: () => new Date('2026-03-06T12:05:00.000Z'),
     });
 
-    const publishedQuiz = app.listQuizSummaries(demoAuthorActor).find((quiz) => quiz.status === 'published');
+    const publishedQuiz = (await app.listQuizSummaries(demoAuthorActor)).find((quiz) => quiz.status === 'published');
 
     expect(publishedQuiz).toBeDefined();
 
