@@ -1,47 +1,34 @@
 /// <reference types="bun-types" />
 
-import { afterEach, describe, expect, mock, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
-const tempDirectories: string[] = [];
-
-afterEach(() => {
-  mock.restore();
-
-  while (tempDirectories.length > 0) {
-    rmSync(tempDirectories.pop()!, { force: true, recursive: true });
-  }
-});
-
-function createTempDatabasePath() {
-  const directory = mkdtempSync(join(tmpdir(), 'quiz-authoring-'));
-  tempDirectories.push(directory);
-  return join(directory, 'authoring.sqlite');
-}
+import { describe, expect, mock, test } from 'bun:test';
 
 async function loadDemoAppServiceModule() {
   mock.module('server-only', () => ({}));
   return import('@/lib/server/demo-app-service');
 }
 
-async function loadAuthoringSqliteStoreModule() {
+async function loadAuthoringSpacetimeStoreModule() {
   mock.module('server-only', () => ({}));
-  return import('@/lib/server/authoring-sqlite-store');
+  return import('@/lib/server/authoring-spacetimedb-store');
 }
 
-describe('SQLite authoring persistence', () => {
+async function loadInMemorySupportModule() {
+  mock.module('server-only', () => ({}));
+  return import('@/tests/support/in-memory-authoring-spacetime');
+}
+
+describe('SpacetimeDB authoring persistence', () => {
   test('persists authoring edits and publish state across service instances', async () => {
-    const databasePath = createTempDatabasePath();
     const { createDemoAppService, demoAuthorActor } = await loadDemoAppServiceModule();
+    const { createInMemoryAuthoringSpacetimeClientFactory } = await loadInMemorySupportModule();
+    const authoringClientFactory = createInMemoryAuthoringSpacetimeClientFactory();
 
     const firstApp = createDemoAppService({
-      authoringDatabasePath: databasePath,
+      authoringClientFactory,
       clock: () => new Date('2026-03-07T12:00:00.000Z'),
     });
 
-    const draftQuiz = firstApp.listQuizSummaries(demoAuthorActor).find((quiz) => quiz.status === 'draft');
+    const draftQuiz = (await firstApp.listQuizSummaries(demoAuthorActor)).find((quiz) => quiz.status === 'draft');
 
     expect(draftQuiz).toBeDefined();
 
@@ -58,11 +45,11 @@ describe('SQLite authoring persistence', () => {
     });
 
     const secondApp = createDemoAppService({
-      authoringDatabasePath: databasePath,
+      authoringClientFactory,
       clock: () => new Date('2026-03-07T12:05:00.000Z'),
     });
 
-    const summaries = secondApp.listQuizSummaries(demoAuthorActor);
+    const summaries = await secondApp.listQuizSummaries(demoAuthorActor);
     const persistedQuiz = summaries.find((quiz) => quiz.quiz_id === draftQuiz!.quiz_id);
     const persistedDocument = await secondApp.loadQuizDocument({ actor: demoAuthorActor, quizId: draftQuiz!.quiz_id });
 
@@ -77,16 +64,25 @@ describe('SQLite authoring persistence', () => {
     expect(persistedDocument.quiz.published_at).toBe('2026-03-07T12:00:00.000Z');
   });
 
-  test('runs authoring migrations idempotently', async () => {
-    const databasePath = createTempDatabasePath();
-    const { createSqliteAuthoringStore, runAuthoringSqliteMigrations } = await loadAuthoringSqliteStoreModule();
+  test('requires the Spacetime authoring env before creating a live store', async () => {
+    const { getAuthoringSpacetimeEnvStatus, parseAuthoringSpacetimeConfig } = await loadAuthoringSpacetimeStoreModule();
 
-    const firstRun = runAuthoringSqliteMigrations(databasePath);
-    const secondRun = runAuthoringSqliteMigrations(databasePath);
-    const store = createSqliteAuthoringStore({ databasePath, seedDocuments: [] });
+    const status = getAuthoringSpacetimeEnvStatus({
+      NEXT_PUBLIC_SPACETIME_ENDPOINT: 'https://maincloud.spacetimedb.com',
+      SPACETIME_DATABASE: 'quiz-1j871',
+      SPACETIME_ADMIN_TOKEN: '   ',
+    });
 
-    expect(firstRun.appliedMigrations).toEqual(['0001_authoring_quizzes.sql']);
-    expect(secondRun.appliedMigrations).toEqual([]);
-    expect(store.listQuizSummaries({ clerkUserId: 'user-1' })).toEqual([]);
+    expect(status).toEqual({
+      isConfigured: false,
+      missingKeys: ['SPACETIME_ADMIN_TOKEN'],
+    });
+    expect(() =>
+      parseAuthoringSpacetimeConfig({
+        NEXT_PUBLIC_SPACETIME_ENDPOINT: 'https://maincloud.spacetimedb.com',
+        SPACETIME_DATABASE: 'quiz-1j871',
+        SPACETIME_ADMIN_TOKEN: '   ',
+      }),
+    ).toThrow('Authoring persistence requires: SPACETIME_ADMIN_TOKEN');
   });
 });
