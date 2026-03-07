@@ -1,10 +1,15 @@
 import Link from 'next/link';
 import { createRoomAction, publishQuizAction } from '@/app/actions';
+import {
+  DashboardAuthoringReadinessSurface,
+  DashboardProtectedGuardSurface,
+  DashboardRuntimeReadinessSurface,
+} from '@/components/protected-readiness-surfaces';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
 import { Button } from '@/components/ui/button';
+import { getAppOperationalReadiness, getAppService } from '@/lib/server/app-service';
 import { CLERK_SIGN_IN_PATH, getProtectedAuthorState } from '@/lib/server/author-auth';
-import { getDemoAppService } from '@/lib/server/demo-app-service';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,33 +29,17 @@ export default async function DashboardPage({
   const error = getValue(resolvedSearchParams.error);
 
   if (authorState.status !== 'authenticated') {
-    return (
-      <PageShell
-        eyebrow="Dashboard"
-        title="Author dashboard is guarded"
-        description="This route now expects Clerk-backed server auth before protected authoring or runtime bootstrap actions can run."
-      >
-        <SectionCard title="Clerk integration required" eyebrow="Protected author flow">
-          <p className="text-sm text-muted-foreground">
-            {authorState.status === 'setup-required' ? authorState.message : 'Sign in with Clerk to continue.'}
-          </p>
-          {authorState.status === 'unauthenticated' ? (
-            <div className="mt-4">
-              <Button asChild className="h-10 rounded-full px-4">
-                <Link href={CLERK_SIGN_IN_PATH}>Open sign-in</Link>
-              </Button>
-            </div>
-          ) : null}
-          {authorState.status === 'setup-required' && authorState.missingEnvKeys.length > 0 ? (
-            <p className="mt-3 text-sm text-muted-foreground">Missing env: {authorState.missingEnvKeys.join(', ')}</p>
-          ) : null}
-        </SectionCard>
-      </PageShell>
-    );
+    return <DashboardProtectedGuardSurface authorState={authorState} signInPath={CLERK_SIGN_IN_PATH} />;
   }
 
   const actor = authorState.actor;
-  const app = getDemoAppService();
+  const readiness = getAppOperationalReadiness();
+
+  if (!readiness.canLoadAuthoring) {
+    return <DashboardAuthoringReadinessSurface missingEnvKeys={readiness.authoring.missingKeys} />;
+  }
+
+  const app = getAppService();
   const quizzes = await app.listQuizSummaries(actor);
   const rooms = app.listActiveRooms(actor);
 
@@ -65,6 +54,8 @@ export default async function DashboardPage({
           <p className="text-sm text-muted-foreground">{error ?? notice}</p>
         </SectionCard>
       )}
+
+      {!readiness.canBootstrapRooms && <DashboardRuntimeReadinessSurface missingEnvKeys={readiness.runtime.missing} />}
 
       <div className="flex flex-wrap gap-3">
         <Button asChild className="h-10 rounded-full px-4" variant="outline">
@@ -99,7 +90,7 @@ export default async function DashboardPage({
               ) : (
                 <form action={createRoomAction}>
                   <input name="quizId" type="hidden" value={quiz.quiz_id} />
-                  <Button className="h-10 rounded-full px-4" type="submit">
+                  <Button className="h-10 rounded-full px-4" disabled={!readiness.canBootstrapRooms} type="submit">
                     Create host room
                   </Button>
                 </form>

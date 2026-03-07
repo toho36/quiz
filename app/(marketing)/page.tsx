@@ -1,43 +1,49 @@
 import Link from 'next/link';
-import { signInDemoAuthorAction, signOutDemoAuthorAction } from '@/app/actions';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
 import { Button } from '@/components/ui/button';
-import { getDemoAuthorActor } from '@/lib/server/demo-session';
+import { CLERK_SIGN_IN_PATH, getProtectedAuthorState } from '@/lib/server/author-auth';
 import { appRoutes } from '@/lib/shared/routes';
 
+export const dynamic = 'force-dynamic';
+
 export default async function LandingPage() {
-  const actor = await getDemoAuthorActor();
+  const authorState = await getProtectedAuthorState();
 
   return (
     <PageShell
       eyebrow="Landing"
       title="Quiz MVP initial application flows"
-      description="This starter uses a tiny server-owned demo boundary so the landing, dashboard, authoring, host, join, and play routes exercise the existing services without moving authority into the browser."
+      description="This starter keeps guest play lightweight while protected dashboard, authoring, and host flows resolve identity on the server through Clerk-backed auth."
     >
       <div className="grid gap-4 lg:grid-cols-2">
         <SectionCard title="Author flow" eyebrow="Guarded workspace">
           <p className="text-sm text-muted-foreground">
             Enter the protected dashboard, edit a draft quiz, publish it, and create a host room from the server boundary.
           </p>
-          {actor ? (
+          {authorState.status === 'authenticated' ? (
             <div className="mt-4 flex flex-wrap gap-3">
               <Button asChild className="h-10 rounded-full px-4">
                 <Link href="/dashboard">Open dashboard</Link>
               </Button>
-              <form action={signOutDemoAuthorAction}>
-                <Button className="h-10 rounded-full px-4" type="submit" variant="outline">
-                  Exit demo author session
-                </Button>
-              </form>
+            </div>
+          ) : authorState.status === 'unauthenticated' ? (
+            <div className="mt-4 flex flex-wrap gap-3">
+              <Button asChild className="h-10 rounded-full px-4">
+                <Link href={CLERK_SIGN_IN_PATH}>Sign in with Clerk</Link>
+              </Button>
             </div>
           ) : (
-            <form action={signInDemoAuthorAction} className="mt-4">
-              <input name="next" type="hidden" value="/dashboard" />
-              <Button className="h-10 rounded-full px-4" type="submit">
-                Continue as demo author
-              </Button>
-            </form>
+            <div className="mt-4 space-y-3 text-sm text-muted-foreground">
+              <p>
+                {authorState.status === 'setup-required'
+                  ? authorState.message
+                  : 'Sign in with Clerk to continue once the protected author flow is enabled.'}
+              </p>
+              {authorState.status === 'setup-required' && authorState.missingEnvKeys.length > 0 ? (
+                <p>Missing env: {authorState.missingEnvKeys.join(', ')}</p>
+              ) : null}
+            </div>
           )}
         </SectionCard>
 

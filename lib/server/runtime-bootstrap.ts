@@ -1,20 +1,37 @@
 import 'server-only';
-import { ConfigurationError, type EnvSource } from '@/lib/env/shared';
-import { parseServerEnv, type ServerSecretKey } from '@/lib/env/server';
+import { parseServerEnv } from '@/lib/env/server';
+import {
+  ConfigurationError,
+  parseRequiredAbsoluteUrl,
+  readOptionalEnvString,
+  type EnvSource,
+} from '@/lib/env/shared';
+
+export type RuntimeBootstrapEnvKey =
+  | 'NEXT_PUBLIC_SPACETIME_ENDPOINT'
+  | 'SPACETIME_DATABASE'
+  | 'SPACETIME_ADMIN_TOKEN'
+  | 'RUNTIME_BOOTSTRAP_SIGNING_KEY';
+
+export type RuntimeBootstrapSpacetimeConfig = {
+  endpoint: string;
+  databaseName: string;
+  adminToken: string;
+};
 
 const REQUIRED_KEYS = {
-  canCreateRooms: ['CLERK_SECRET_KEY', 'SPACETIME_ADMIN_TOKEN'],
+  canCreateRooms: ['NEXT_PUBLIC_SPACETIME_ENDPOINT', 'SPACETIME_DATABASE', 'SPACETIME_ADMIN_TOKEN'],
   canIssueHostClaims: ['RUNTIME_BOOTSTRAP_SIGNING_KEY'],
-  'create-room': ['CLERK_SECRET_KEY', 'SPACETIME_ADMIN_TOKEN'],
+  'create-room': ['NEXT_PUBLIC_SPACETIME_ENDPOINT', 'SPACETIME_DATABASE', 'SPACETIME_ADMIN_TOKEN'],
   'issue-host-claims': ['RUNTIME_BOOTSTRAP_SIGNING_KEY'],
 } as const;
 
 type RuntimeBootstrapScope = 'create-room' | 'issue-host-claims';
 
 export function getRuntimeBootstrapReadiness(source: EnvSource = process.env) {
-  const env = parseServerEnv(source);
-  const missing = getMissingServerSecretKeys(env, [
-    'CLERK_SECRET_KEY',
+  const missing = getMissingRuntimeBootstrapKeys(source, [
+    'NEXT_PUBLIC_SPACETIME_ENDPOINT',
+    'SPACETIME_DATABASE',
     'SPACETIME_ADMIN_TOKEN',
     'RUNTIME_BOOTSTRAP_SIGNING_KEY',
   ]);
@@ -28,7 +45,7 @@ export function getRuntimeBootstrapReadiness(source: EnvSource = process.env) {
 
 export function requireRuntimeBootstrapEnv(scope: RuntimeBootstrapScope, source: EnvSource = process.env) {
   const env = parseServerEnv(source);
-  const missing = getMissingServerSecretKeys(env, REQUIRED_KEYS[scope]);
+  const missing = getMissingRuntimeBootstrapKeys(source, REQUIRED_KEYS[scope]);
 
   if (missing.length > 0) {
     throw new ConfigurationError(`Runtime bootstrap cannot ${scope} without: ${missing.join(', ')}`);
@@ -36,7 +53,8 @@ export function requireRuntimeBootstrapEnv(scope: RuntimeBootstrapScope, source:
 
   if (scope === 'create-room') {
     return {
-      clerkSecretKey: env.clerkSecretKey!,
+      spacetimeEndpoint: parseRequiredAbsoluteUrl(source, 'NEXT_PUBLIC_SPACETIME_ENDPOINT'),
+      spacetimeDatabase: env.spacetimeDatabase!,
       spacetimeAdminToken: env.spacetimeAdminToken!,
     };
   }
@@ -46,14 +64,26 @@ export function requireRuntimeBootstrapEnv(scope: RuntimeBootstrapScope, source:
   };
 }
 
-function getMissingServerSecretKeys(
-  env: ReturnType<typeof parseServerEnv>,
-  requiredKeys: readonly ServerSecretKey[],
-) {
-  const missing: ServerSecretKey[] = [];
+export function parseRuntimeBootstrapSpacetimeConfig(source: EnvSource = process.env): RuntimeBootstrapSpacetimeConfig {
+  const env = requireRuntimeBootstrapEnv('create-room', source);
+
+  return {
+    endpoint: env.spacetimeEndpoint!,
+    databaseName: env.spacetimeDatabase!,
+    adminToken: env.spacetimeAdminToken!,
+  };
+}
+
+function getMissingRuntimeBootstrapKeys(source: EnvSource, requiredKeys: readonly RuntimeBootstrapEnvKey[]) {
+  const env = parseServerEnv(source);
+  const missing: RuntimeBootstrapEnvKey[] = [];
 
   for (const key of requiredKeys) {
-    if (key === 'CLERK_SECRET_KEY' && !env.clerkSecretKey) {
+    if (key === 'NEXT_PUBLIC_SPACETIME_ENDPOINT' && !readOptionalEnvString(source, 'NEXT_PUBLIC_SPACETIME_ENDPOINT')) {
+      missing.push(key);
+    }
+
+    if (key === 'SPACETIME_DATABASE' && !env.spacetimeDatabase) {
       missing.push(key);
     }
 

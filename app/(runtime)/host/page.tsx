@@ -1,10 +1,15 @@
 import Link from 'next/link';
-import { hostRoomAction, signInDemoAuthorAction } from '@/app/actions';
+import { hostRoomAction } from '@/app/actions';
+import {
+  HostProtectedGuardSurface,
+  HostRuntimeReadinessSurface,
+} from '@/components/protected-readiness-surfaces';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
+import { Button } from '@/components/ui/button';
+import { getAppOperationalReadiness, getAppService } from '@/lib/server/app-service';
+import { CLERK_SIGN_IN_PATH, getProtectedAuthorState } from '@/lib/server/author-auth';
 import type { HostAllowedAction } from '@/lib/shared/contracts';
-import { getDemoAppService } from '@/lib/server/demo-app-service';
-import { getDemoAuthorActor } from '@/lib/server/demo-session';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,31 +34,18 @@ export default async function HostPage({
 }: {
   searchParams: HostSearchParams;
 }) {
-  const [actor, resolvedSearchParams] = await Promise.all([getDemoAuthorActor(), searchParams]);
+  const [authorState, resolvedSearchParams] = await Promise.all([getProtectedAuthorState(), searchParams]);
   const notice = getValue(resolvedSearchParams.notice);
   const error = getValue(resolvedSearchParams.error);
   const selectedRoomCode = getValue(resolvedSearchParams.roomCode);
 
-  if (!actor) {
-    return (
-      <PageShell
-        eyebrow="Host"
-        title="Host room access is guarded"
-        description="Creating and managing runtime rooms stays tied to the server-owned author session, even in the MVP demo flow."
-      >
-        <SectionCard title="Sign in to host" eyebrow="Demo author">
-          <form action={signInDemoAuthorAction} className="mt-2">
-            <input name="next" type="hidden" value="/host" />
-            <button className="rounded-full bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950" type="submit">
-              Continue as demo author
-            </button>
-          </form>
-        </SectionCard>
-      </PageShell>
-    );
+  if (authorState.status !== 'authenticated') {
+    return <HostProtectedGuardSurface authorState={authorState} signInPath={CLERK_SIGN_IN_PATH} />;
   }
 
-  const app = getDemoAppService();
+  const actor = authorState.actor;
+  const readiness = getAppOperationalReadiness();
+  const app = getAppService();
   const rooms = app.listActiveRooms(actor);
   const details = selectedRoomCode ? app.findHostRoomDetails({ actor, roomCode: selectedRoomCode }) : null;
 
@@ -68,6 +60,8 @@ export default async function HostPage({
           <p className="text-sm text-slate-300">{error ?? notice}</p>
         </SectionCard>
       )}
+
+      {!readiness.canBootstrapRooms && <HostRuntimeReadinessSurface missingEnvKeys={readiness.runtime.missing} />}
 
       {!details ? (
         <SectionCard title="Select a room" eyebrow="Active rooms">

@@ -4,12 +4,13 @@ import {
   createSpacetimeAuthoringStore,
   type AuthoringSpacetimeClientFactory,
 } from '@/lib/server/authoring-spacetimedb-store';
+import { createRuntimeHostClaimSigner } from '@/lib/server/host-claim-signer';
 import {
   createSpacetimeRuntimeBootstrapProvisioner,
   type RuntimeBootstrapProvisioner,
 } from '@/lib/server/runtime-spacetimedb-bootstrap';
 import { createDemoSeedQuizDocuments } from '@/lib/server/demo-seed';
-import { createRoomBootstrapService } from '@/lib/server/room-bootstrap-service';
+import { createRoomBootstrapService, type HostClaimSigner } from '@/lib/server/room-bootstrap-service';
 import { createRuntimeGameplayService, type AcceptedAnswerSubmission } from '@/lib/server/runtime-gameplay-service';
 import { AuthorizationError, InvalidOperationError, NotFoundError } from '@/lib/server/service-errors';
 import {
@@ -30,14 +31,9 @@ import {
   type RuntimeRoomPlayer,
 } from '@/lib/shared/contracts';
 
-export const demoAuthorActor: AuthenticatedAuthor = {
-  clerkUserId: 'user-1',
-  clerkSessionId: 'demo-session-1',
-};
+type AppClock = () => Date;
 
-type DemoClock = () => Date;
-
-type DemoQuizSummary = {
+type AppQuizSummary = {
   quiz_id: string;
   title: string;
   status: AuthoringQuizDocument['quiz']['status'];
@@ -63,18 +59,22 @@ type RoomSession = {
   leaderboard: HostRoomState['leaderboard'];
 };
 
-type DemoState = {
+type AppState = {
   roomsByCode: Map<string, RoomSession>;
   guestBindings: Map<string, Map<string, GuestBinding>>;
   nextPlayerNumber: number;
   nextClaimNumber: number;
 };
 
-type DemoAppServiceDependencies = {
+type AppServiceDependencies = {
   authoringClientFactory?: AuthoringSpacetimeClientFactory;
-  runtimeProvisioner?: RuntimeBootstrapProvisioner;
-  clock?: DemoClock;
+  runtimeProvisioner?: RuntimeBootstrapProvisioner | null;
+  hostClaimSigner?: HostClaimSigner | null;
+  clock?: AppClock;
+  seedDocuments?: AuthoringQuizDocument[];
 };
+
+export type AppService = ReturnType<typeof createDemoAppService>;
 
 function clone<T>(value: T): T {
   return structuredClone(value);
@@ -84,7 +84,7 @@ function normalizeRoomCode(value: string) {
   return value.trim().toUpperCase();
 }
 
-function createInitialState(): DemoState {
+function createInitialState(): AppState {
   return {
     roomsByCode: new Map(),
     guestBindings: new Map(),
@@ -93,24 +93,52 @@ function createInitialState(): DemoState {
   };
 }
 
+function createDemoHostClaimSigner(): HostClaimSigner {
+  return {
+    async signHostClaim(claims) {
+      return `demo-host-claim:${claims.room_id}:${claims.jti}`;
+    },
+  };
+}
+
 export function createDemoAppService({
   authoringClientFactory,
-  runtimeProvisioner = createSpacetimeRuntimeBootstrapProvisioner(),
+  runtimeProvisioner = null,
+  hostClaimSigner = createDemoHostClaimSigner(),
   clock = () => new Date(),
-}: DemoAppServiceDependencies = {}) {
+  seedDocuments = createDemoSeedQuizDocuments(),
+}: AppServiceDependencies = {}) {
   const state = createInitialState();
   const runtimeGameplayService = createRuntimeGameplayService({ clock });
   let authoringStore: ReturnType<typeof createSpacetimeAuthoringStore> | null = null;
+  let resolvedRuntimeProvisioner = runtimeProvisioner;
+  let resolvedHostClaimSigner = hostClaimSigner;
 
   function getAuthoringStore() {
     if (!authoringStore) {
       authoringStore = createSpacetimeAuthoringStore({
         clientFactory: authoringClientFactory,
-        seedDocuments: createDemoSeedQuizDocuments(),
+        seedDocuments,
       });
     }
 
     return authoringStore;
+  }
+
+  function getRuntimeProvisioner() {
+    if (!resolvedRuntimeProvisioner) {
+      resolvedRuntimeProvisioner = createSpacetimeRuntimeBootstrapProvisioner();
+    }
+
+    return resolvedRuntimeProvisioner;
+  }
+
+  function getHostClaimSigner() {
+    if (!resolvedHostClaimSigner) {
+      resolvedHostClaimSigner = createRuntimeHostClaimSigner();
+    }
+
+    return resolvedHostClaimSigner;
   }
 
   const authoringService = createAuthoringService({
@@ -131,12 +159,12 @@ export function createDemoAppService({
     generateJti: () => `claim-${state.nextClaimNumber++}`,
     hostClaimSigner: {
       async signHostClaim(claims) {
-        return `demo-host-claim:${claims.room_id}:${claims.jti}`;
+        return getHostClaimSigner().signHostClaim(claims);
       },
     },
     roomProvisioner: {
       async createRoom(input) {
-        const bootstrap = await runtimeProvisioner.createRoom(input);
+        const bootstrap = await getRuntimeProvisioner().createRoom(input);
         state.roomsByCode.set(bootstrap.room.room_code, {
           bootstrap: null,
           room: bootstrap.room,
@@ -276,7 +304,7 @@ export function createDemoAppService({
   }
 
   return {
-    async listQuizSummaries(actor: AuthenticatedAuthor): Promise<DemoQuizSummary[]> {
+    async listQuizSummaries(actor: AuthenticatedAuthor): Promise<AppQuizSummary[]> {
       return getAuthoringStore().listQuizSummaries(actor);
     },
 
@@ -516,10 +544,33 @@ export function createDemoAppService({
   };
 }
 
+function shouldSeedLocalFixtureDocumentsByDefault(source: NodeJS.ProcessEnv = process.env) {
+  return source.NEXT_PUBLIC_APP_ENV?.trim() === 'local';
+}
+
+export function createAppService(dependencies: Omit<AppServiceDependencies, 'seedDocuments'> & { seedDocuments?: AuthoringQuizDocument[] } = {}) {
+  return createDemoAppService({
+    ...dependencies,
+    hostClaimSigner: dependencies.hostClaimSigner ?? null,
+    seedDocuments:
+      dependencies.seedDocuments ?? (shouldSeedLocalFixtureDocumentsByDefault() ? createDemoSeedQuizDocuments() : []),
+  });
+}
+
+const globalAppKey = '__quizAppService';
+
+export function getAppService() {
+  const globalScope = globalThis as typeof globalThis & { [globalAppKey]?: AppService };
+  if (!globalScope[globalAppKey]) {
+    globalScope[globalAppKey] = createAppService();
+  }
+  return globalScope[globalAppKey]!;
+}
+
 const globalDemoAppKey = '__quizDemoAppService';
 
 export function getDemoAppService() {
-  const globalScope = globalThis as typeof globalThis & { [globalDemoAppKey]?: ReturnType<typeof createDemoAppService> };
+  const globalScope = globalThis as typeof globalThis & { [globalDemoAppKey]?: AppService };
   if (!globalScope[globalDemoAppKey]) {
     globalScope[globalDemoAppKey] = createDemoAppService();
   }

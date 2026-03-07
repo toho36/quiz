@@ -1,10 +1,17 @@
 /// <reference types="bun-types" />
 
-import { describe, expect, mock, test } from 'bun:test';
+import { afterEach, describe, expect, mock, test } from 'bun:test';
 
-async function loadDemoAppServiceModule() {
+const ORIGINAL_APP_ENV = process.env.NEXT_PUBLIC_APP_ENV;
+
+const authorActor = {
+  clerkUserId: 'user-1',
+  clerkSessionId: 'session-1',
+};
+
+async function loadAppServiceModule() {
   mock.module('server-only', () => ({}));
-  return import('@/lib/server/demo-app-service');
+  return import('@/lib/server/app-service');
 }
 
 async function loadAuthoringSpacetimeStoreModule() {
@@ -17,41 +24,47 @@ async function loadInMemorySupportModule() {
   return import('@/tests/support/in-memory-authoring-spacetime');
 }
 
+afterEach(() => {
+  process.env.NEXT_PUBLIC_APP_ENV = ORIGINAL_APP_ENV;
+});
+
 describe('SpacetimeDB authoring persistence', () => {
-  test('persists authoring edits and publish state across service instances', async () => {
-    const { createDemoAppService, demoAuthorActor } = await loadDemoAppServiceModule();
+  test('persists authoring edits and publish state across default app-service instances', async () => {
+    process.env.NEXT_PUBLIC_APP_ENV = 'local';
+
+    const { createAppService } = await loadAppServiceModule();
     const { createInMemoryAuthoringSpacetimeClientFactory } = await loadInMemorySupportModule();
     const authoringClientFactory = createInMemoryAuthoringSpacetimeClientFactory();
 
-    const firstApp = createDemoAppService({
+    const firstApp = createAppService({
       authoringClientFactory,
       clock: () => new Date('2026-03-07T12:00:00.000Z'),
     });
 
-    const draftQuiz = (await firstApp.listQuizSummaries(demoAuthorActor)).find((quiz) => quiz.status === 'draft');
+    const draftQuiz = (await firstApp.listQuizSummaries(authorActor)).find((quiz) => quiz.status === 'draft');
 
     expect(draftQuiz).toBeDefined();
 
     await firstApp.saveQuizDetails({
-      actor: demoAuthorActor,
+      actor: authorActor,
       quizId: draftQuiz!.quiz_id,
       title: 'Persisted draft title',
-      description: 'Stored through SQLite.',
+      description: 'Stored through SpacetimeDB.',
     });
 
     await firstApp.publishQuiz({
-      actor: demoAuthorActor,
+      actor: authorActor,
       quizId: draftQuiz!.quiz_id,
     });
 
-    const secondApp = createDemoAppService({
+    const secondApp = createAppService({
       authoringClientFactory,
       clock: () => new Date('2026-03-07T12:05:00.000Z'),
     });
 
-    const summaries = await secondApp.listQuizSummaries(demoAuthorActor);
+    const summaries = await secondApp.listQuizSummaries(authorActor);
     const persistedQuiz = summaries.find((quiz) => quiz.quiz_id === draftQuiz!.quiz_id);
-    const persistedDocument = await secondApp.loadQuizDocument({ actor: demoAuthorActor, quizId: draftQuiz!.quiz_id });
+    const persistedDocument = await secondApp.loadQuizDocument({ actor: authorActor, quizId: draftQuiz!.quiz_id });
 
     expect(persistedQuiz).toMatchObject({
       quiz_id: draftQuiz!.quiz_id,
@@ -60,7 +73,7 @@ describe('SpacetimeDB authoring persistence', () => {
       question_count: 2,
       updated_at: '2026-03-07T12:00:00.000Z',
     });
-    expect(persistedDocument.quiz.description).toBe('Stored through SQLite.');
+    expect(persistedDocument.quiz.description).toBe('Stored through SpacetimeDB.');
     expect(persistedDocument.quiz.published_at).toBe('2026-03-07T12:00:00.000Z');
   });
 

@@ -1,11 +1,21 @@
+import { ClerkProvider } from '@clerk/nextjs';
 import Link from 'next/link';
 import './globals.css';
+import { getClerkEnvStatus } from '@/lib/env/clerk';
 import { getPublicRuntimeConfig } from '@/lib/env/public';
 import { primaryRoutes } from '@/lib/shared/routes';
 import { Geist } from "next/font/google";
 import { cn } from "@/lib/utils";
 
 const geist = Geist({subsets:['latin'],variable:'--font-sans'});
+
+function AppProviders({ children, clerkPublishableKey }: { children: React.ReactNode; clerkPublishableKey: string | null }) {
+  if (!clerkPublishableKey) {
+    return <>{children}</>;
+  }
+
+  return <ClerkProvider publishableKey={clerkPublishableKey}>{children}</ClerkProvider>;
+}
 
 export const metadata = {
   title: 'Quiz',
@@ -14,8 +24,8 @@ export const metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const config = getPublicRuntimeConfig();
-
-  return (
+  const clerk = getClerkEnvStatus();
+  const app = (
     <html lang="en" className={cn('dark', 'font-sans', geist.variable)}>
       <body>
         <div className="min-h-screen bg-canvas">
@@ -49,4 +59,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </body>
     </html>
   );
+
+  return <AppProviders clerkPublishableKey={clerk.isConfigured ? clerk.publishableKey : null}>{app}</AppProviders>;
 }

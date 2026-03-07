@@ -2,9 +2,11 @@
 
 import type { Route } from 'next';
 import { redirect } from 'next/navigation';
-import { getDemoAppService } from '@/lib/server/demo-app-service';
-import { ensureDemoGuestSessionId, getDemoAuthorActor, signInDemoAuthor, signOutDemoAuthor } from '@/lib/server/demo-session';
-import { AuthorizationError } from '@/lib/server/service-errors';
+import { ConfigurationError } from '@/lib/env/shared';
+import { getAppOperationalReadiness, getAppService } from '@/lib/server/app-service';
+import { requireProtectedAuthorActor } from '@/lib/server/author-auth';
+import { ensureDemoGuestSessionId } from '@/lib/server/demo-session';
+import { AuthorizationError, InvalidOperationError, NotFoundError } from '@/lib/server/service-errors';
 import type { HostAllowedAction } from '@/lib/shared/contracts';
 
 function getString(formData: FormData, key: string) {
@@ -24,63 +26,102 @@ function buildUrl(pathname: Route, params: Record<string, string | undefined>) {
 }
 
 function formatError(error: unknown) {
-  return error instanceof Error ? error.message : 'Something went wrong';
+  if (
+    error instanceof ConfigurationError ||
+    error instanceof AuthorizationError ||
+    error instanceof InvalidOperationError ||
+    error instanceof NotFoundError
+  ) {
+    return error.message;
+  }
+
+  return 'The request could not be completed. Check runtime readiness and server logs.';
 }
 
 function normalizeRoomCode(value: string) {
   return value.trim().toUpperCase();
 }
 
-async function requireDemoAuthor() {
-  const actor = await getDemoAuthorActor();
-  if (!actor) {
-    throw new AuthorizationError('Sign in as the demo author to continue');
-  }
-  return actor;
+async function requireProtectedAuthor() {
+  return requireProtectedAuthorActor();
 }
 
-export async function signInDemoAuthorAction(formData: FormData) {
-  await signInDemoAuthor();
-  const next = getString(formData, 'next');
-  redirect(next.startsWith('/') ? (next as Route) : '/dashboard');
+function sanitizeForLog(value: string) {
+  return [process.env.CLERK_SECRET_KEY, process.env.SPACETIME_ADMIN_TOKEN, process.env.RUNTIME_BOOTSTRAP_SIGNING_KEY]
+    .filter((secret): secret is string => Boolean(secret))
+    .reduce((current, secret) => current.split(secret).join('[redacted]'), value);
 }
 
-export async function signOutDemoAuthorAction() {
-  await signOutDemoAuthor();
-  redirect('/');
+function logProtectedFlowFailure(
+  event: string,
+  error: unknown,
+  metadata: Record<string, string | null | string[] | boolean>,
+) {
+  const readiness = getAppOperationalReadiness();
+  const errorName = error instanceof Error ? error.name : 'UnknownError';
+  const errorMessage = sanitizeForLog(error instanceof Error ? error.message : String(error));
+
+  console.error(
+    JSON.stringify({
+      event,
+      environment: process.env.NEXT_PUBLIC_APP_ENV ?? 'unknown',
+      errorName,
+      errorMessage,
+      metadata,
+      readiness: {
+        authoringConfigured: readiness.authoring.isConfigured,
+        missingAuthoringKeys: readiness.authoring.missingKeys,
+        canCreateRooms: readiness.runtime.canCreateRooms,
+        canIssueHostClaims: readiness.runtime.canIssueHostClaims,
+        missingRuntimeKeys: readiness.runtime.missing,
+      },
+    }),
+  );
 }
 
 export async function saveQuizDetailsAction(formData: FormData) {
   const quizId = getString(formData, 'quizId');
+  let actorUserId: string | null = null;
   try {
-    await getDemoAppService().saveQuizDetails({
-      actor: await requireDemoAuthor(),
+    const actor = await requireProtectedAuthor();
+    actorUserId = actor.clerkUserId;
+    await getAppService().saveQuizDetails({
+      actor,
       quizId,
       title: getString(formData, 'title'),
       description: getString(formData, 'description'),
     });
     redirect(buildUrl('/authoring', { quizId, notice: 'Draft saved.' }));
   } catch (error) {
+    logProtectedFlowFailure('authoring.save_failed', error, { actorUserId, quizId });
     redirect(buildUrl('/authoring', { quizId, error: formatError(error) }));
   }
 }
 
 export async function publishQuizAction(formData: FormData) {
   const quizId = getString(formData, 'quizId');
+  let actorUserId: string | null = null;
   try {
-    await getDemoAppService().publishQuiz({ actor: await requireDemoAuthor(), quizId });
+    const actor = await requireProtectedAuthor();
+    actorUserId = actor.clerkUserId;
+    await getAppService().publishQuiz({ actor, quizId });
     redirect(buildUrl('/authoring', { quizId, notice: 'Quiz published and ready for hosting.' }));
   } catch (error) {
+    logProtectedFlowFailure('authoring.publish_failed', error, { actorUserId, quizId });
     redirect(buildUrl('/authoring', { quizId, error: formatError(error) }));
   }
 }
 
 export async function createRoomAction(formData: FormData) {
   const quizId = getString(formData, 'quizId');
+  let actorUserId: string | null = null;
   try {
-    const room = await getDemoAppService().createRoom({ actor: await requireDemoAuthor(), quizId });
+    const actor = await requireProtectedAuthor();
+    actorUserId = actor.clerkUserId;
+    const room = await getAppService().createRoom({ actor, quizId });
     redirect(buildUrl('/host', { roomCode: room.room_code, notice: 'Host room created.' }));
   } catch (error) {
+    logProtectedFlowFailure('host.create_room_failed', error, { actorUserId, quizId });
     redirect(buildUrl('/dashboard', { error: formatError(error) }));
   }
 }
@@ -88,14 +129,18 @@ export async function createRoomAction(formData: FormData) {
 export async function hostRoomAction(formData: FormData) {
   const roomCode = normalizeRoomCode(getString(formData, 'roomCode'));
   const action = getString(formData, 'action') as HostAllowedAction;
+  let actorUserId: string | null = null;
   try {
-    getDemoAppService().performHostAction({
-      actor: await requireDemoAuthor(),
+    const actor = await requireProtectedAuthor();
+    actorUserId = actor.clerkUserId;
+    getAppService().performHostAction({
+      actor,
       roomCode,
       action,
     });
     redirect(buildUrl('/host', { roomCode, notice: 'Host action applied.' }));
   } catch (error) {
+    logProtectedFlowFailure('host.action_failed', error, { action, actorUserId, roomCode });
     redirect(buildUrl('/host', { roomCode, error: formatError(error) }));
   }
 }
@@ -103,7 +148,7 @@ export async function hostRoomAction(formData: FormData) {
 export async function joinRoomAction(formData: FormData) {
   const roomCode = normalizeRoomCode(getString(formData, 'roomCode'));
   try {
-    getDemoAppService().joinRoom({
+    getAppService().joinRoom({
       guestSessionId: await ensureDemoGuestSessionId(),
       roomCode,
       displayName: getString(formData, 'displayName'),
@@ -117,7 +162,7 @@ export async function joinRoomAction(formData: FormData) {
 export async function submitAnswerAction(formData: FormData) {
   const roomCode = normalizeRoomCode(getString(formData, 'roomCode'));
   try {
-    getDemoAppService().submitAnswer({
+    getAppService().submitAnswer({
       guestSessionId: await ensureDemoGuestSessionId(),
       roomCode,
       selectedOptionIds: formData.getAll('selectedOptionIds').flatMap((value) => (typeof value === 'string' ? [value] : [])),

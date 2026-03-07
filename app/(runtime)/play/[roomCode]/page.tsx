@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { submitAnswerAction } from '@/app/actions';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
-import { getDemoAppService } from '@/lib/server/demo-app-service';
+import { getAppService } from '@/lib/server/app-service';
 import { getDemoGuestSessionId } from '@/lib/server/demo-session';
 
 export const dynamic = 'force-dynamic';
@@ -27,7 +27,7 @@ export default async function PlayPage({
     getDemoGuestSessionId(),
   ]);
   const roomCode = rawRoomCode.toUpperCase();
-  const state = guestSessionId ? getDemoAppService().findPlayerRoomState({ guestSessionId, roomCode }) : null;
+  const state = guestSessionId ? getAppService().findPlayerRoomState({ guestSessionId, roomCode }) : null;
   const notice = getValue(resolvedSearchParams.notice);
   const error = getValue(resolvedSearchParams.error);
 

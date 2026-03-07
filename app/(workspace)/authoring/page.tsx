@@ -1,13 +1,17 @@
 import Link from 'next/link';
 import { publishQuizAction, saveQuizDetailsAction } from '@/app/actions';
+import {
+  AuthoringPersistenceReadinessSurface,
+  AuthoringProtectedGuardSurface,
+} from '@/components/protected-readiness-surfaces';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { getAppOperationalReadiness, getAppService } from '@/lib/server/app-service';
 import { CLERK_SIGN_IN_PATH, getProtectedAuthorState } from '@/lib/server/author-auth';
-import { getDemoAppService } from '@/lib/server/demo-app-service';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,33 +31,17 @@ export default async function AuthoringPage({
   const error = getValue(resolvedSearchParams.error);
 
   if (authorState.status !== 'authenticated') {
-    return (
-      <PageShell
-        eyebrow="Authoring"
-        title="Authoring requires Clerk-backed auth"
-        description="Quiz edits and publish actions stay on the Next.js server boundary, so this workspace now blocks until the Clerk-backed author guard is wired."
-      >
-        <SectionCard title="Clerk integration required" eyebrow="Guard">
-          <p className="text-sm text-muted-foreground">
-            {authorState.status === 'setup-required' ? authorState.message : 'Sign in with Clerk to edit quizzes.'}
-          </p>
-          {authorState.status === 'unauthenticated' ? (
-            <div className="mt-4">
-              <Button asChild className="h-10 rounded-full px-4">
-                <Link href={CLERK_SIGN_IN_PATH}>Open sign-in</Link>
-              </Button>
-            </div>
-          ) : null}
-          {authorState.status === 'setup-required' && authorState.missingEnvKeys.length > 0 ? (
-            <p className="mt-3 text-sm text-muted-foreground">Missing env: {authorState.missingEnvKeys.join(', ')}</p>
-          ) : null}
-        </SectionCard>
-      </PageShell>
-    );
+    return <AuthoringProtectedGuardSurface authorState={authorState} signInPath={CLERK_SIGN_IN_PATH} />;
   }
 
   const actor = authorState.actor;
-  const app = getDemoAppService();
+  const readiness = getAppOperationalReadiness();
+
+  if (!readiness.canLoadAuthoring) {
+    return <AuthoringPersistenceReadinessSurface missingEnvKeys={readiness.authoring.missingKeys} />;
+  }
+
+  const app = getAppService();
   const quizzes = await app.listQuizSummaries(actor);
   const selectedQuizId = getValue(resolvedSearchParams.quizId) ?? quizzes[0]?.quiz_id;
   const document = selectedQuizId ? await app.loadQuizDocument({ actor, quizId: selectedQuizId }) : null;
