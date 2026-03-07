@@ -1,5 +1,19 @@
 export type AppEnvironment = 'local' | 'preview' | 'production';
 
+export type PublicRuntimeConfig = {
+  appUrl: string;
+  environment: AppEnvironment;
+  clerkPublishableKey: string | null;
+  spacetimeEndpoint: string | null;
+};
+
+export type ServerEnv = {
+  clerkSecretKey: string | null;
+  spacetimeAdminToken: string | null;
+  spacetimeDatabase: string | null;
+  runtimeBootstrapSigningKey: string | null;
+};
+
 export type AppRoute = {
   href: '/' | '/dashboard' | '/authoring' | '/host' | '/join';
   label: string;
