@@ -17,6 +17,7 @@ import {
   hostRoomStateSchema,
   playerJoinCommandSchema,
   playerRoomStateSchema,
+  type AuthoringQuizDocument,
   type CreateRoomResponse,
   type HostAllowedAction,
   type HostRoomState,

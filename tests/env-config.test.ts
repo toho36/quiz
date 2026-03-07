@@ -106,31 +106,44 @@ describe('environment configuration boundary', () => {
 
     expect(
       getRuntimeBootstrapReadiness({
-        CLERK_SECRET_KEY: ' ',
+        NEXT_PUBLIC_SPACETIME_ENDPOINT: ' ',
+        SPACETIME_DATABASE: 'quiz-1j871',
         SPACETIME_ADMIN_TOKEN: 'admin-token',
         RUNTIME_BOOTSTRAP_SIGNING_KEY: '',
       }),
     ).toEqual({
       canCreateRooms: false,
       canIssueHostClaims: false,
-      missing: ['CLERK_SECRET_KEY', 'RUNTIME_BOOTSTRAP_SIGNING_KEY'],
+      missing: ['NEXT_PUBLIC_SPACETIME_ENDPOINT', 'RUNTIME_BOOTSTRAP_SIGNING_KEY'],
     });
   });
 
   test('fails loudly when a runtime bootstrap path requires missing server secrets', async () => {
-    const { requireRuntimeBootstrapEnv } = await loadRuntimeBootstrapModule();
+    const { parseRuntimeBootstrapSpacetimeConfig, requireRuntimeBootstrapEnv } = await loadRuntimeBootstrapModule();
 
     expect(() =>
       requireRuntimeBootstrapEnv('create-room', {
-        CLERK_SECRET_KEY: '',
+        NEXT_PUBLIC_SPACETIME_ENDPOINT: 'https://maincloud.spacetimedb.com',
+        SPACETIME_DATABASE: '',
         SPACETIME_ADMIN_TOKEN: 'admin-token',
         RUNTIME_BOOTSTRAP_SIGNING_KEY: 'signing-key',
       }),
-    ).toThrow('CLERK_SECRET_KEY');
+    ).toThrow('SPACETIME_DATABASE');
+
+    expect(
+      parseRuntimeBootstrapSpacetimeConfig({
+        NEXT_PUBLIC_SPACETIME_ENDPOINT: ' https://maincloud.spacetimedb.com ',
+        SPACETIME_DATABASE: ' quiz-1j871 ',
+        SPACETIME_ADMIN_TOKEN: ' admin-token ',
+      }),
+    ).toEqual({
+      endpoint: 'https://maincloud.spacetimedb.com',
+      databaseName: 'quiz-1j871',
+      adminToken: 'admin-token',
+    });
 
     expect(
       requireRuntimeBootstrapEnv('issue-host-claims', {
-        CLERK_SECRET_KEY: 'sk_test_123',
         SPACETIME_ADMIN_TOKEN: 'admin-token',
         RUNTIME_BOOTSTRAP_SIGNING_KEY: ' signing-key ',
       }),
