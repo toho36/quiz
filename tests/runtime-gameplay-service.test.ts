@@ -1,5 +1,3 @@
-/// <reference types="bun-types" />
-
 import { describe, expect, test } from 'bun:test';
 import { createRuntimeGameplayService } from '@/lib/server/runtime-gameplay-service';
 import { InvalidOperationError } from '@/lib/server/service-errors';

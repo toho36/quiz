@@ -1,10 +1,26 @@
-/// <reference types="bun-types" />
-
 import { describe, expect, test } from 'bun:test';
 import { createAuthoringService } from '@/lib/server/authoring-service';
 import { createRoomBootstrapService } from '@/lib/server/room-bootstrap-service';
 import { AuthorizationError, InvalidOperationError } from '@/lib/server/service-errors';
 import { publishedQuizDocumentFixture } from '@/tests/fixtures/domain-contracts';
+
+const questionImageFixture = {
+  storage_provider: 'cloudflare_r2',
+  object_key: 'quiz-images/quiz-1/question-1/image.png',
+  content_type: 'image/png',
+  bytes: 256_000,
+  width: 1200,
+  height: 800,
+} as const;
+
+const optionImageFixture = {
+  ...questionImageFixture,
+  object_key: 'quiz-images/quiz-1/question-1/option-1.webp',
+  content_type: 'image/webp',
+  bytes: 128_000,
+  width: 640,
+  height: 640,
+} as const;
 
 describe('server-side authoring boundary', () => {
   test('rejects ownership mismatches before returning quiz data', async () => {
@@ -29,6 +45,8 @@ describe('server-side authoring boundary', () => {
 
   test('preserves server-owned quiz metadata on authoring saves', async () => {
     let savedDocument: unknown;
+    const questionImageInput = { ...questionImageFixture, data: Uint8Array.from([0x01, 0x02, 0x03]) };
+    const optionImageInput = { ...optionImageFixture, data: Uint8Array.from([0x04, 0x05]) };
     const service = createAuthoringService({
       clock: () => new Date('2026-03-06T12:30:00.000Z'),
       quizStore: {
@@ -54,6 +72,20 @@ describe('server-side authoring boundary', () => {
           updated_at: '2020-01-01T00:00:00.000Z',
           published_at: undefined,
         },
+        questions: publishedQuizDocumentFixture.questions.map((entry, index) =>
+          index === 0
+            ? {
+                ...entry,
+                question: {
+                  ...entry.question,
+                  image: questionImageInput,
+                },
+                options: entry.options.map((option) =>
+                  option.option_id === 'option-1' ? { ...option, image: optionImageInput } : option,
+                ),
+              }
+            : entry,
+        ),
       },
     });
 
@@ -62,7 +94,47 @@ describe('server-side authoring boundary', () => {
     expect(result.quiz.title).toBe('Updated title');
     expect(result.quiz.updated_at).toBe('2026-03-06T12:30:00.000Z');
     expect(result.quiz.published_at).toBe(publishedQuizDocumentFixture.quiz.published_at);
+    expect(result.questions[0].question.image).toEqual(questionImageFixture);
+    expect(result.questions[0].options[0].image).toEqual(optionImageFixture);
+    expect('data' in (result.questions[0].question.image as Record<string, unknown>)).toBe(false);
+    expect('data' in (result.questions[0].options[0].image as Record<string, unknown>)).toBe(false);
     expect(savedDocument).toEqual(result);
+  });
+
+  test('rejects invalid image metadata at the authoring save boundary', async () => {
+    const service = createAuthoringService({
+      quizStore: {
+        async getQuizDocument() {
+          return publishedQuizDocumentFixture;
+        },
+        async saveQuizDocument(document) {
+          return document;
+        },
+      },
+    });
+
+    await expect(
+      service.saveQuizDocument({
+        actor: { clerkUserId: 'user-1' },
+        document: {
+          ...publishedQuizDocumentFixture,
+          questions: publishedQuizDocumentFixture.questions.map((entry, index) =>
+            index === 0
+              ? {
+                  ...entry,
+                  question: {
+                    ...entry.question,
+                    image: {
+                      ...questionImageFixture,
+                      content_type: 'image/gif',
+                    },
+                  },
+                }
+              : entry,
+          ),
+        },
+      }),
+    ).rejects.toThrow('question.image.content_type');
   });
 
   test('publishes through the shared quiz document validator', async () => {
