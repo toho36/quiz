@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
 
 import { afterEach, describe, expect, mock, test } from 'bun:test';
-import { isValidElement } from 'react';
+import { isValidElement, type ReactElement, type ReactNode } from 'react';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
 import { Badge } from '@/components/ui/badge';
@@ -17,7 +17,7 @@ type TestElementProps = {
   type?: string;
 };
 
-function flattenElements(node: ReactNode): Array<React.ReactElement<TestElementProps>> {
+function flattenElements(node: ReactNode): Array<ReactElement<TestElementProps>> {
   if (Array.isArray(node)) {
     return node.flatMap(flattenElements);
   }
