@@ -1,7 +1,12 @@
 import Link from 'next/link';
 import { reconnectRoomAction, submitAnswerAction } from '@/app/actions';
+import { LocaleSwitcher } from '@/components/locale-switcher';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
+import { Button } from '@/components/ui/button';
+import { buildRuntimeQuizImageSrc } from '@/lib/client/runtime';
+import { formatPlayerSubmissionStatus, formatQuestionPhase, formatRoomLifecycle } from '@/lib/i18n/app-shell';
+import { getLocaleContext } from '@/lib/i18n/server';
 import { getAppService } from '@/lib/server/app-service';
 import { getDemoGuestSessionId, getDemoPlayerBinding } from '@/lib/server/demo-session';
 
@@ -21,31 +26,37 @@ export default async function PlayPage({
   params: PlayParams;
   searchParams: PlaySearchParams;
 }) {
-  const [{ roomCode: rawRoomCode }, resolvedSearchParams, guestSessionId] = await Promise.all([
+  const [{ roomCode: rawRoomCode }, resolvedSearchParams, guestSessionId, { locale, dictionary }] = await Promise.all([
     params,
     searchParams,
     getDemoGuestSessionId(),
+    getLocaleContext(),
   ]);
   const roomCode = rawRoomCode.toUpperCase();
   const storedBinding = await getDemoPlayerBinding(roomCode);
   const state = guestSessionId ? getAppService().findPlayerRoomState({ guestSessionId, roomCode }) : null;
   const notice = getValue(resolvedSearchParams.notice);
   const error = getValue(resolvedSearchParams.error);
+  const nextPath = `/play/${encodeURIComponent(roomCode)}` as const;
 
   return (
     <PageShell
-      eyebrow="Play"
-      title={`Player room ${roomCode}`}
-      description="This route reads the current room-scoped player view from the server-owned runtime state and posts answers back through the existing gameplay logic."
+      eyebrow={dictionary.playPage.eyebrow}
+      title={`${dictionary.playPage.titlePrefix} ${roomCode}`}
+      description={dictionary.playPage.description}
+      actions={<LocaleSwitcher locale={locale} nextPath={nextPath} dictionary={dictionary} />}
     >
       {(notice || error) && (
-        <SectionCard title={error ? 'Play action blocked' : 'Updated'} eyebrow={error ? 'Runtime validation' : 'Server action'}>
+        <SectionCard
+          title={error ? dictionary.playPage.errorTitle : dictionary.playPage.updatedTitle}
+          eyebrow={error ? dictionary.playPage.errorEyebrow : dictionary.playPage.updatedEyebrow}
+        >
           <p className="text-sm text-slate-300">{error ?? notice}</p>
         </SectionCard>
       )}
 
       {!state ? (
-        <SectionCard title="Join this room first" eyebrow="Room-scoped binding">
+        <SectionCard title={dictionary.playPage.joinFirstTitle} eyebrow={dictionary.playPage.joinFirstEyebrow}>
           {storedBinding ? (
             <>
               <p className="text-sm text-slate-300">
@@ -65,71 +76,121 @@ export default async function PlayPage({
               </p>
               <Link
                 className="mt-4 inline-flex text-sm font-medium text-sky-300 hover:text-sky-200"
-                href={{ pathname: '/join', query: { roomCode } }}
+                href={`/join?roomCode=${roomCode}`}
               >
-                Go to join flow →
+                {dictionary.playPage.goToJoinFlow}
               </Link>
             </>
           )}
         </SectionCard>
       ) : (
         <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-          <SectionCard title={state.self.display_name} eyebrow={`Room · ${state.shared_room.lifecycle_state}`}>
+          <SectionCard title={state.self.display_name} eyebrow={`${dictionary.appLabels.roomPrefix} · ${formatRoomLifecycle(dictionary, state.shared_room.lifecycle_state)}`}>
             <dl className="space-y-3 text-sm text-slate-300">
               <div>
-                <dt className="text-slate-500">Phase</dt>
-                <dd>{state.shared_room.question_phase ?? 'Lobby'}</dd>
+                <dt className="text-slate-500">{dictionary.appLabels.phaseLabel}</dt>
+                <dd>{formatQuestionPhase(dictionary, state.shared_room.question_phase)}</dd>
               </div>
               <div>
-                <dt className="text-slate-500">Score</dt>
+                <dt className="text-slate-500">{dictionary.appLabels.scoreLabel}</dt>
                 <dd>
-                  {state.self.score_total} pts · {state.self.correct_count} correct
+                  {state.self.score_total} {dictionary.appLabels.pointsSuffix} · {state.self.correct_count} {dictionary.appLabels.correctLabel}
                 </dd>
               </div>
               <div>
-                <dt className="text-slate-500">Submission</dt>
-                <dd>{state.self.submission_status}</dd>
+                <dt className="text-slate-500">{dictionary.appLabels.submissionLabel}</dt>
+                <dd>{formatPlayerSubmissionStatus(dictionary, state.self.submission_status)}</dd>
               </div>
             </dl>
 
             {state.active_question && state.shared_room.question_phase === 'question_open' && state.self.submission_status === 'not_submitted' ? (
               <form action={submitAnswerAction} className="mt-4 space-y-3">
                 <input name="roomCode" type="hidden" value={roomCode} />
-                <p className="text-sm font-medium text-white">{state.active_question.prompt}</p>
+                <div className="space-y-3">
+                  <p className="text-sm font-medium text-white">{state.active_question.prompt}</p>
+                  {state.active_question.image && (
+                    <img
+                      alt={dictionary.playPage.questionImageAlt}
+                      className="max-h-64 rounded-2xl border border-border object-contain"
+                      src={buildRuntimeQuizImageSrc({ roomCode, objectKey: state.active_question.image.object_key, viewer: 'player' })}
+                    />
+                  )}
+                </div>
                 {state.active_question.display_options.map((option) => (
                   <label key={option.option_id} className="flex gap-3 rounded-2xl border border-border px-4 py-3 text-sm text-slate-300">
                     <input
                       name="selectedOptionIds"
-                      type={state.active_question!.question_type === 'single_choice' ? 'radio' : 'checkbox'}
+                      type={state.active_question?.question_type === 'single_choice' ? 'radio' : 'checkbox'}
                       value={option.option_id}
                     />
-                    <span>{option.text}</span>
+                    <span className="flex flex-1 flex-col gap-2">
+                      <span>{option.text}</span>
+                      {option.image && (
+                        <img
+                          alt={`${dictionary.playPage.optionImageAlt} ${option.display_position}`}
+                          className="max-h-40 rounded-2xl border border-border object-contain"
+                          src={buildRuntimeQuizImageSrc({ roomCode, objectKey: option.image.object_key, viewer: 'player' })}
+                        />
+                      )}
+                    </span>
                   </label>
                 ))}
-                <button className="rounded-full bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950" type="submit">
-                  Submit answer
-                </button>
+                <Button className="h-10 rounded-full px-4" type="submit">
+                  {dictionary.playPage.submitAnswer}
+                </Button>
               </form>
             ) : (
-              <div className="mt-4 rounded-2xl border border-border px-4 py-3 text-sm text-slate-300">
-                {state.shared_room.lifecycle_state === 'lobby'
-                  ? 'Waiting for the host to start the game.'
-                  : state.self.latest_outcome
-                    ? `Latest result: ${state.self.latest_outcome.awarded_points} pts (${state.self.latest_outcome.is_correct ? 'correct' : 'incorrect'}).`
-                    : 'Waiting for the next host transition.'}
+              <div className="mt-4 space-y-3">
+                {state.active_question && (
+                  <div className="space-y-3">
+                    <p className="text-sm font-medium text-white">{state.active_question.prompt}</p>
+                    {state.active_question.image && (
+                      <img
+                        alt={dictionary.playPage.questionImageAlt}
+                        className="max-h-64 rounded-2xl border border-border object-contain"
+                        src={buildRuntimeQuizImageSrc({ roomCode, objectKey: state.active_question.image.object_key, viewer: 'player' })}
+                      />
+                    )}
+                    {state.active_question.display_options.length > 0 && (
+                      <ul className="space-y-3">
+                        {state.active_question.display_options.map((option) => (
+                          <li key={option.option_id} className="rounded-2xl border border-border px-4 py-3 text-sm text-slate-300">
+                            <p className="font-medium text-white">
+                              {option.display_position}. {option.text}
+                            </p>
+                            {option.image && (
+                              <img
+                                alt={`${dictionary.playPage.optionImageAlt} ${option.display_position}`}
+                                className="mt-3 max-h-40 rounded-2xl border border-border object-contain"
+                                src={buildRuntimeQuizImageSrc({ roomCode, objectKey: option.image.object_key, viewer: 'player' })}
+                              />
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+                <div className="rounded-2xl border border-border px-4 py-3 text-sm text-slate-300">
+                  {state.shared_room.lifecycle_state === 'lobby'
+                    ? dictionary.playPage.waitingForHost
+                    : state.self.latest_outcome
+                      ? `${dictionary.playPage.latestResultPrefix} ${state.self.latest_outcome.awarded_points} ${dictionary.appLabels.pointsSuffix} (${state.self.latest_outcome.is_correct ? dictionary.appLabels.correctLabel : dictionary.appLabels.incorrectLabel})${dictionary.playPage.latestResultSuffix}`
+                      : dictionary.playPage.waitingForNextTransition}
+                </div>
               </div>
             )}
           </SectionCard>
 
-          <SectionCard title="Shared room state" eyebrow="Server-authoritative">
+          <SectionCard title={dictionary.playPage.sharedStateTitle} eyebrow={dictionary.playPage.sharedStateEyebrow}>
             <p className="text-sm text-slate-300">
-              Current question: {state.active_question?.prompt ?? 'No active question yet.'}
+              {dictionary.appLabels.currentQuestionLabel}: {state.active_question?.prompt ?? dictionary.playPage.noActiveQuestion}
             </p>
             {state.leaderboard && (
               <ol className="mt-4 space-y-2 text-sm text-slate-300">
                 {state.leaderboard.map((entry) => (
                   <li key={entry.room_player_id}>
-                    #{entry.rank} {entry.display_name} · {entry.score_total} pts
+                    #{entry.rank} {entry.display_name} · {entry.score_total} {dictionary.appLabels.pointsSuffix}
                   </li>
                 ))}
               </ol>

@@ -1,5 +1,3 @@
-/// <reference types="bun-types" />
-
 import { describe, expect, test } from 'bun:test';
 import {
   answerSelectionSchema,
@@ -39,10 +37,103 @@ import {
   runtimeRoomPlayerFixture,
 } from '@/tests/fixtures/domain-contracts';
 
+type ImageContractTestQuizDocument = Omit<AuthoringQuizDocument, 'questions'> & {
+  questions: Array<{
+    question: Omit<AuthoringQuizDocument['questions'][number]['question'], 'image'> & { image?: unknown };
+    options: Array<Omit<AuthoringQuizDocument['questions'][number]['options'][number], 'image'> & { image?: unknown }>;
+  }>;
+};
+
+const questionImageFixture = {
+  storage_provider: 'cloudflare_r2',
+  object_key: 'quiz-images/quiz-1/question-1/image.png',
+  content_type: 'image/png',
+  bytes: 256_000,
+  width: 1200,
+  height: 800,
+} as const;
+
+const optionImageFixture = {
+  ...questionImageFixture,
+  object_key: 'quiz-images/quiz-1/question-1/option-1.webp',
+  content_type: 'image/webp',
+  bytes: 128_000,
+  width: 640,
+  height: 640,
+} as const;
+
+function cloneQuizForImageContractTests(): ImageContractTestQuizDocument {
+  return {
+    quiz: { ...publishedQuizDocumentFixture.quiz },
+    questions: publishedQuizDocumentFixture.questions.map(({ question, options }) => ({
+      question: { ...question },
+      options: options.map((option) => ({ ...option })),
+    })),
+  };
+}
+
 describe('shared domain contracts', () => {
   test('accepts a valid published authoring quiz document', () => {
     const result = authoringQuizDocumentSchema.safeParse(publishedQuizDocumentFixture);
     expect(result.success).toBe(true);
+  });
+
+  test('accepts optional Cloudflare R2 image references across authoring and runtime DTOs', () => {
+    const questionImageInput = { ...questionImageFixture, data: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]) };
+    const optionImageInput = { ...optionImageFixture, data: Uint8Array.from([0x52, 0x32]) };
+    const quizWithImages = cloneQuizForImageContractTests();
+
+    quizWithImages.questions[0].question.image = questionImageInput;
+    quizWithImages.questions[0].options[0].image = optionImageInput;
+    quizWithImages.questions[1].question.image = null;
+
+    const parsedDocument = authoringQuizDocumentSchema.safeParse(quizWithImages);
+
+    expect(parsedDocument.success).toBe(true);
+    if (parsedDocument.success) {
+      expect(parsedDocument.data.questions[0].question.image).toEqual(questionImageFixture);
+      expect(parsedDocument.data.questions[0].options[0].image).toEqual(optionImageFixture);
+      expect(parsedDocument.data.questions[1].question.image).toBeUndefined();
+      expect('data' in (parsedDocument.data.questions[0].question.image as Record<string, unknown>)).toBe(false);
+      expect('data' in (parsedDocument.data.questions[0].options[0].image as Record<string, unknown>)).toBe(false);
+    }
+
+    expect(
+      runtimeQuestionSnapshotSchema.parse({
+        ...runtimeQuestionSnapshotFixture,
+        image: questionImageInput,
+      }).image,
+    ).toEqual(questionImageFixture);
+    expect(
+      runtimeQuestionOptionSnapshotSchema.parse({
+        ...runtimeQuestionOptionSnapshotFixture,
+        image: optionImageInput,
+      }).image,
+    ).toEqual(optionImageFixture);
+    expect(
+      playerRoomStateSchema.parse({
+        ...playerRoomStateFixture,
+        active_question: {
+          ...playerRoomStateFixture.active_question,
+          image: questionImageInput,
+          display_options: playerRoomStateFixture.active_question!.display_options.map((option) =>
+            option.option_id === 'option-1' ? { ...option, image: optionImageInput } : option,
+          ),
+        },
+      }).active_question?.image,
+    ).toEqual(questionImageFixture);
+    expect(
+      hostRoomStateSchema.parse({
+        ...hostRoomStateFixture,
+        active_question: {
+          ...hostRoomStateFixture.active_question,
+          image: questionImageInput,
+          display_options: hostRoomStateFixture.active_question!.display_options.map((option) =>
+            option.option_id === 'option-1' ? { ...option, image: optionImageInput } : option,
+          ),
+        },
+      }).active_question?.display_options.find((option) => option.option_id === 'option-1')?.image,
+    ).toEqual(optionImageFixture);
   });
 
   test('rejects a published quiz with no questions', () => {
@@ -76,6 +167,18 @@ describe('shared domain contracts', () => {
       { option_id: 'option-4', question_id: 'question-2', position: 2, text: '4', is_correct: false },
       { option_id: 'option-5', question_id: 'question-2', position: 3, text: '6', is_correct: false },
     ];
+
+    const result = authoringQuizDocumentSchema.safeParse(invalid);
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects invalid image metadata on authoring quiz records', () => {
+    const invalid = cloneQuizForImageContractTests();
+
+    invalid.questions[0].question.image = {
+      ...questionImageFixture,
+      content_type: 'image/gif',
+    };
 
     const result = authoringQuizDocumentSchema.safeParse(invalid);
     expect(result.success).toBe(false);

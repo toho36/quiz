@@ -1,5 +1,3 @@
-import 'server-only';
-
 import { cookies } from 'next/headers';
 
 const DEMO_GUEST_COOKIE = 'quiz-demo-guest';

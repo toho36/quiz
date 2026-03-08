@@ -1,5 +1,3 @@
-import 'server-only';
-
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { parseServerEnv } from '@/lib/env/server';
 import { ConfigurationError } from '@/lib/env/shared';

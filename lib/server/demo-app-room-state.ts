@@ -66,11 +66,13 @@ export function buildActiveQuestion(session: RoomStateSession): PlayerRoomState[
   return {
     question_index: question.question_index,
     prompt: question.prompt,
+    image: question.image,
     question_type: question.question_type,
     display_options: getCurrentOptionSnapshots(session).map((option) => ({
       option_id: option.source_option_id,
       display_position: option.display_position,
       text: option.text,
+      image: option.image,
     })),
   };
 }

@@ -59,6 +59,7 @@ export function createInMemoryRuntimeBootstrapProvisioner(
             question_index: questionIndex,
             source_question_id: entry.question.question_id,
             prompt: entry.question.prompt,
+            image: entry.question.image,
             question_type: entry.question.question_type,
             evaluation_policy: entry.question.evaluation_policy,
             base_points: entry.question.base_points,
@@ -85,6 +86,7 @@ export function createInMemoryRuntimeBootstrapProvisioner(
               author_position: option.position,
               display_position: displayPositions[optionIndex],
               text: option.text,
+              image: option.image,
               is_correct: option.is_correct,
             }),
           );

@@ -9,6 +9,10 @@ export type PublicRuntimeConfig = {
 
 export type ServerEnv = {
   clerkSecretKey: string | null;
+  cloudflareR2AccessKeyId: string | null;
+  cloudflareR2AccountId: string | null;
+  cloudflareR2BucketName: string;
+  cloudflareR2SecretAccessKey: string | null;
   spacetimeAdminToken: string | null;
   spacetimeDatabase: string | null;
   runtimeBootstrapSigningKey: string | null;

@@ -104,6 +104,11 @@ function installSpacetimeDbMock() {
 function installMocks() {
   mock.module('server-only', () => ({}));
   installSpacetimeDbMock();
+  mock.module('next/headers', () => ({
+    cookies: async () => ({
+      get: () => undefined,
+    }),
+  }));
   mock.module('next/navigation', () => ({
     redirect(location: string) {
       throw new RedirectSignal(location);
@@ -119,11 +124,15 @@ function installMocks() {
     }),
   }));
   mock.module('@/lib/server/author-auth', () => ({
+    CLERK_SIGN_IN_PATH: '/sign-in',
+    getProtectedAuthorActor: () => mockedRequireProtectedAuthorActor(),
+    getProtectedAuthorState: async () => ({ status: 'authenticated', actor: await mockedRequireProtectedAuthorActor() }),
     requireProtectedAuthorActor: () => mockedRequireProtectedAuthorActor(),
   }));
   mock.module('@/lib/server/demo-session', () => ({
     ensureDemoHostSessionId: async () => 'host-session-1',
     ensureDemoGuestSessionId: async () => 'guest-session-1',
+    getDemoGuestSessionId: async () => 'guest-session-1',
     getDemoPlayerBinding: async () => null,
     setDemoPlayerBinding: async () => {},
     clearDemoPlayerBinding: async () => {},
@@ -207,7 +216,7 @@ describe('protected action failure handling', () => {
     const redirectUrl = parseRedirectLocation(redirectError!.location);
     expect(redirectUrl.pathname).toBe('/dashboard');
     expect(redirectUrl.searchParams.get('error')).toBe(
-      'The request could not be completed. Check runtime readiness and server logs.',
+      'Nepodařilo se teď vytvořit místnost moderátora. Zkuste to prosím znovu.',
     );
 
     const loggedCalls = consoleErrorMock.mock.calls as unknown[][];

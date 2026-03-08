@@ -16,24 +16,6 @@ function installMocks() {
       return <a href={href}>{children}</a>;
     },
   }));
-
-  mock.module('@/components/page-shell', () => ({
-    PageShell({ title, description, children }: { title: string; description: string; children: ReactNode }) {
-      return <section><h1>{title}</h1><p>{description}</p>{children}</section>;
-    },
-  }));
-
-  mock.module('@/components/section-card', () => ({
-    SectionCard({ title, children }: { title: string; children: ReactNode }) {
-      return <section><h2>{title}</h2>{children}</section>;
-    },
-  }));
-
-  mock.module('@/components/ui/button', () => ({
-    Button({ asChild, children, ...props }: { asChild?: boolean; children: ReactNode } & Record<string, unknown>) {
-      return asChild ? <span>{children}</span> : <button {...props}>{children}</button>;
-    },
-  }));
 }
 
 async function loadSurfacesModule() {

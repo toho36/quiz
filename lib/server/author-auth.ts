@@ -1,5 +1,3 @@
-import 'server-only';
-
 import type { Route } from 'next';
 import { auth } from '@clerk/nextjs/server';
 import { getClerkEnvStatus } from '@/lib/env/clerk';

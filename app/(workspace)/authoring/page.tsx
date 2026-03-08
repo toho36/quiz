@@ -7,35 +7,44 @@ import {
   moveOptionAction,
   moveQuestionAction,
   publishQuizAction,
+  removeQuizImageAction,
   saveQuestionAction,
   saveQuizDetailsAction,
+  uploadQuizImageAction,
 } from '@/app/actions';
-import {
-  AuthoringPersistenceReadinessSurface,
-  AuthoringProtectedGuardSurface,
-} from '@/components/protected-readiness-surfaces';
+import { LocaleSwitcher } from '@/components/locale-switcher';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { formatQuestionType, formatQuizStatus } from '@/lib/i18n/app-shell';
+import { getLocaleContext } from '@/lib/i18n/server';
 import { getAppOperationalReadiness, getAppService } from '@/lib/server/app-service';
 import { CLERK_SIGN_IN_PATH, getProtectedAuthorState } from '@/lib/server/author-auth';
+import { QUIZ_IMAGE_ACCEPT_VALUE } from '@/lib/server/quiz-image-assets';
 import { CONTRACT_LIMITS, type AuthoringQuizDocument, type QuestionType } from '@/lib/shared/contracts';
 
 export const dynamic = 'force-dynamic';
 
+type AuthoringSearchParams = Promise<{ error?: string; notice?: string; quizId?: string }>;
+
 function getValue(value: string | string[] | undefined) {
   return typeof value === 'string' ? value : undefined;
+}
+
+function buildPreviewSrc(quizId: string, objectKey: string) {
+  const search = new URLSearchParams({ quizId, objectKey });
+  return `/authoring/assets?${search.toString()}`;
 }
 
 function sortQuestions(document: AuthoringQuizDocument) {
   return document.questions.slice().sort((left, right) => left.question.position - right.question.position);
 }
 
-function sortOptions(entry: AuthoringQuizDocument['questions'][number]) {
-  return entry.options.slice().sort((left, right) => left.position - right.position);
+function sortOptions(options: AuthoringQuizDocument['questions'][number]['options']) {
+  return options.slice().sort((left, right) => left.position - right.position);
 }
 
 function getMinimumOptionCount(questionType: QuestionType) {
@@ -44,34 +53,68 @@ function getMinimumOptionCount(questionType: QuestionType) {
     : CONTRACT_LIMITS.singleChoiceOptionCount.min;
 }
 
-function getShuffleValue(value: boolean | undefined) {
-  if (value === undefined) {
+function getShuffleValue(value: boolean | null | undefined) {
+  if (value === undefined || value === null) {
     return '';
   }
-
   return value ? 'true' : 'false';
 }
-
-type AuthoringSearchParams = Promise<{ quizId?: string; error?: string; notice?: string }>;
 
 export default async function AuthoringPage({
   searchParams,
 }: {
   searchParams: AuthoringSearchParams;
 }) {
-  const [authorState, resolvedSearchParams] = await Promise.all([getProtectedAuthorState(), searchParams]);
+  const [authorState, resolvedSearchParams, { locale, dictionary }] = await Promise.all([
+    getProtectedAuthorState(),
+    searchParams,
+    getLocaleContext(),
+  ]);
   const notice = getValue(resolvedSearchParams.notice);
   const error = getValue(resolvedSearchParams.error);
 
   if (authorState.status !== 'authenticated') {
-    return <AuthoringProtectedGuardSurface authorState={authorState} signInPath={CLERK_SIGN_IN_PATH} />;
+    return (
+      <PageShell
+        eyebrow={dictionary.routes.items.authoring.label}
+        title={dictionary.authoringPage.guardedTitle}
+        description={dictionary.authoringPage.guardedDescription}
+        actions={<LocaleSwitcher locale={locale} nextPath="/authoring" dictionary={dictionary} />}
+      >
+        <SectionCard title={dictionary.authoringPage.signInTitle} eyebrow={dictionary.authoringPage.signInEyebrow}>
+          {authorState.status === 'unauthenticated' ? (
+            <div className="mt-2">
+              <Button asChild className="h-10 rounded-full px-4">
+                <Link href={CLERK_SIGN_IN_PATH}>{dictionary.authoringPage.signInTitle}</Link>
+              </Button>
+            </div>
+          ) : (
+            <div className="mt-2 space-y-2 text-sm text-muted-foreground">
+              <p>{authorState.message}</p>
+              {authorState.missingEnvKeys.length > 0 ? <p>Missing env: {authorState.missingEnvKeys.join(', ')}</p> : null}
+            </div>
+          )}
+        </SectionCard>
+      </PageShell>
+    );
   }
 
   const actor = authorState.actor;
   const readiness = getAppOperationalReadiness();
 
   if (!readiness.canLoadAuthoring) {
-    return <AuthoringPersistenceReadinessSurface missingEnvKeys={readiness.authoring.missingKeys} />;
+    return (
+      <PageShell
+        eyebrow={dictionary.routes.items.authoring.label}
+        title={dictionary.authoringPage.guardedTitle}
+        description={dictionary.authoringPage.guardedDescription}
+        actions={<LocaleSwitcher locale={locale} nextPath="/authoring" dictionary={dictionary} />}
+      >
+        <SectionCard title={dictionary.authoringPage.errorTitle} eyebrow={dictionary.authoringPage.errorEyebrow}>
+          <p className="text-sm text-muted-foreground">Missing env: {readiness.authoring.missingKeys.join(', ')}</p>
+        </SectionCard>
+      </PageShell>
+    );
   }
 
   const app = getAppService();
@@ -79,127 +122,137 @@ export default async function AuthoringPage({
   const selectedQuizId = getValue(resolvedSearchParams.quizId) ?? quizzes[0]?.quiz_id;
   const document = selectedQuizId ? await app.loadQuizDocument({ actor, quizId: selectedQuizId }) : null;
   const orderedQuestions = document ? sortQuestions(document) : [];
+  const nextPath = selectedQuizId ? (`/authoring?quizId=${selectedQuizId}` as const) : '/authoring';
 
   return (
     <PageShell
-      eyebrow="Authoring"
-      title="Authoring workspace"
-      description="Edit quiz metadata plus question and option content through the server-owned authoring boundary."
+      eyebrow={dictionary.routes.items.authoring.label}
+      title={dictionary.authoringPage.title}
+      description={dictionary.authoringPage.description}
+      actions={<LocaleSwitcher locale={locale} nextPath={nextPath} dictionary={dictionary} />}
     >
       {(notice || error) && (
-        <SectionCard title={error ? 'Save blocked' : 'Updated'} eyebrow={error ? 'Validation' : 'Server action'}>
+        <SectionCard
+          title={error ? dictionary.authoringPage.errorTitle : dictionary.authoringPage.updatedTitle}
+          eyebrow={error ? dictionary.authoringPage.errorEyebrow : dictionary.authoringPage.updatedEyebrow}
+        >
           <p className="text-sm text-muted-foreground">{error ?? notice}</p>
         </SectionCard>
       )}
 
-      <div className="flex flex-wrap gap-3">
-        {quizzes.map((quiz) => (
-          <Button
-            key={quiz.quiz_id}
-            asChild
-            className="rounded-full px-4"
-            variant={quiz.quiz_id === selectedQuizId ? 'default' : 'outline'}
-          >
-            <Link href={{ pathname: '/authoring', query: { quizId: quiz.quiz_id } }}>{quiz.title}</Link>
-          </Button>
-        ))}
-      </div>
-
       {document ? (
         <div className="grid gap-4">
           <div className="grid gap-4 xl:grid-cols-[1fr_0.9fr]">
-            <SectionCard title={document.quiz.title} eyebrow={`Quiz · ${document.quiz.status}`}>
-              <form action={saveQuizDetailsAction} className="space-y-4">
+            <SectionCard
+              title={document.quiz.title}
+              eyebrow={formatQuizStatus(dictionary, document.quiz.status)}
+            >
+              <form action={saveQuizDetailsAction} className="space-y-6">
                 <input name="quizId" type="hidden" value={document.quiz.quiz_id} />
-                <Label className="flex-col items-start gap-2 text-sm text-muted-foreground" htmlFor="quiz-title">
-                  <span>Title</span>
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-muted-foreground" htmlFor="quiz-title">
+                    {dictionary.authoringPage.titleLabel}
+                  </Label>
                   <Input id="quiz-title" className="h-11 rounded-2xl bg-background/60 px-4" defaultValue={document.quiz.title} name="title" />
-                </Label>
-                <Label className="flex-col items-start gap-2 text-sm text-muted-foreground" htmlFor="quiz-description">
-                  <span>Description</span>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-muted-foreground" htmlFor="quiz-description">
+                    {dictionary.authoringPage.descriptionLabel}
+                  </Label>
                   <Textarea
                     id="quiz-description"
-                    className="min-h-32 rounded-2xl bg-background/60 px-4 py-3"
+                    className="min-h-[140px] rounded-3xl bg-background/60 px-4 py-3"
                     defaultValue={document.quiz.description}
                     name="description"
                   />
-                </Label>
-                <div className="flex flex-wrap gap-3">
-                  <Button className="h-10 rounded-full px-4" type="submit">
-                    Save draft
-                  </Button>
-                  {document.quiz.status === 'draft' && (
-                    <Button className="h-10 rounded-full px-4" formAction={publishQuizAction} type="submit" variant="outline">
-                      Publish quiz
-                    </Button>
-                  )}
+                </div>
+                <div>
+                  <div className="space-y-3 rounded-3xl border border-border/70 bg-background/40 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground/70">
+                      {dictionary.authoringPage.updatedTitle}
+                    </p>
+                    <div className="space-y-2 text-sm text-muted-foreground">
+                      <p>
+                        {dictionary.authoringPage.updatedEyebrow}{' '}
+                        <span className="font-medium text-foreground">{formatQuizStatus(dictionary, document.quiz.status)}</span>
+                      </p>
+                      <p>{dictionary.authoringPage.description}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button className="h-10 rounded-full px-4" type="submit">{dictionary.authoringPage.saveDraft}</Button>
+                      {document.quiz.status === 'draft' ? (
+                        <Button className="h-10 rounded-full px-4" formAction={publishQuizAction} type="submit" variant="outline">
+                          {dictionary.authoringPage.publishQuiz}
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
               </form>
             </SectionCard>
 
-            <SectionCard title="Publish boundary" eyebrow="Runtime snapshot policy">
-              <div className="space-y-3 text-sm text-muted-foreground">
-                <p>Authoring edits stay on the Next.js server boundary and must pass shared document validation.</p>
-                <p>Published quizzes remain editable for future rooms; existing room snapshots stay isolated from later authoring edits.</p>
-                <p>
-                  Question limits: {CONTRACT_LIMITS.publishedQuizQuestionCount.min}–{CONTRACT_LIMITS.publishedQuizQuestionCount.max} on publish.
-                  Option limits: single choice {CONTRACT_LIMITS.singleChoiceOptionCount.min}–{CONTRACT_LIMITS.singleChoiceOptionCount.max}, multiple choice {CONTRACT_LIMITS.multipleChoiceOptionCount.min}–{CONTRACT_LIMITS.multipleChoiceOptionCount.max}.
-                </p>
+            <SectionCard title={dictionary.authoringPage.boundaryTitle} eyebrow={dictionary.authoringPage.boundaryEyebrow}>
+              <p className="mb-3 text-sm text-muted-foreground">{dictionary.authoringPage.boundaryDescription}</p>
+              <div className="mt-6 space-y-2 text-xs uppercase tracking-[0.22em] text-muted-foreground/70">
+                {quizzes.map((quiz) => (
+                  <Link key={quiz.quiz_id} className="block hover:text-white" href={`/authoring?quizId=${quiz.quiz_id}`}>
+                    {quiz.title}
+                  </Link>
+                ))}
               </div>
             </SectionCard>
           </div>
 
-          <SectionCard title="Questions" eyebrow="Editable authoring content">
-            <div className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <p className="text-sm text-muted-foreground">Create, edit, order, and validate questions/options without exposing live runtime state.</p>
-                <form action={addQuestionAction}>
-                  <input name="quizId" type="hidden" value={document.quiz.quiz_id} />
-                  <Button className="rounded-full px-4" disabled={orderedQuestions.length >= CONTRACT_LIMITS.publishedQuizQuestionCount.max} type="submit">
-                    Add question
-                  </Button>
-                </form>
-              </div>
+          <SectionCard title="Question set" eyebrow={`${orderedQuestions.length} configured question${orderedQuestions.length === 1 ? '' : 's'}`}>
+            <div className="flex flex-wrap gap-2">
+              <form action={addQuestionAction}>
+                <input name="quizId" type="hidden" value={document.quiz.quiz_id} />
+                <Button type="submit">Add question</Button>
+              </form>
+            </div>
 
+            <div className="mt-6 space-y-5">
               {orderedQuestions.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-border/80 px-4 py-6 text-sm text-muted-foreground">
-                  Add a first question to start the quiz document.
-                </div>
+                <p className="text-sm text-muted-foreground">No questions yet. Add the first question to start building this quiz.</p>
               ) : (
-                orderedQuestions.map((entry, questionIndex) => {
-                  const orderedOptions = sortOptions(entry);
+                orderedQuestions.map((entry, index) => {
+                  const orderedOptions = sortOptions(entry.options);
                   const minimumOptionCount = getMinimumOptionCount(entry.question.question_type);
-                  const canDeleteQuestion =
-                    document.quiz.status !== 'published' || orderedQuestions.length > CONTRACT_LIMITS.publishedQuizQuestionCount.min;
 
                   return (
                     <form
                       key={entry.question.question_id}
                       action={saveQuestionAction}
                       className="space-y-4 rounded-3xl border border-border/80 bg-background/40 p-4"
+                      encType="multipart/form-data"
                     >
                       <input name="quizId" type="hidden" value={document.quiz.quiz_id} />
                       <input name="questionId" type="hidden" value={entry.question.question_id} />
+                      {orderedOptions.map((option) => (
+                        <input key={option.option_id} name="optionId" type="hidden" value={option.option_id} />
+                      ))}
 
-                      <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
-                          <p className="text-sm font-medium text-foreground">Question {questionIndex + 1}</p>
-                          <p className="text-xs text-muted-foreground">{entry.question.question_type} · {orderedOptions.length} option(s)</p>
+                          <p className="text-sm font-medium text-foreground">Question {index + 1}</p>
+                          <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                            {formatQuestionType(dictionary, entry.question.question_type)}
+                          </p>
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          <Button formAction={moveQuestionAction} name="direction" value="up" variant="outline" disabled={questionIndex === 0}>
+                          <Button formAction={moveQuestionAction} name="questionMove" value={`${entry.question.question_id}:up`} variant="outline" disabled={index === 0}>
                             Move up
                           </Button>
                           <Button
                             formAction={moveQuestionAction}
-                            name="direction"
-                            value="down"
+                            name="questionMove"
+                            value={`${entry.question.question_id}:down`}
                             variant="outline"
-                            disabled={questionIndex === orderedQuestions.length - 1}
+                            disabled={index === orderedQuestions.length - 1}
                           >
                             Move down
                           </Button>
-                          <Button formAction={deleteQuestionAction} type="submit" variant="outline" disabled={!canDeleteQuestion}>
+                          <Button formAction={deleteQuestionAction} name="targetQuestionId" value={entry.question.question_id} variant="outline">
                             Delete question
                           </Button>
                         </div>
@@ -209,7 +262,7 @@ export default async function AuthoringPage({
                         <span>Prompt</span>
                         <Textarea
                           id={`prompt-${entry.question.question_id}`}
-                          className="min-h-24 rounded-2xl bg-background/60 px-4 py-3"
+                          className="min-h-[120px] rounded-3xl bg-background/60 px-4 py-3"
                           defaultValue={entry.question.prompt}
                           name="prompt"
                         />
@@ -254,6 +307,35 @@ export default async function AuthoringPage({
                         </Label>
                       </div>
 
+                      <div className="space-y-3 rounded-2xl border border-border/70 bg-background/50 p-3">
+                        <p className="text-sm font-medium text-foreground">Question image</p>
+                        {entry.question.image ? (
+                          <div className="space-y-3">
+                            <div className="overflow-hidden rounded-2xl border border-border/70 bg-canvas/70">
+                              <img
+                                alt={dictionary.authoringPage.questionImageAlt}
+                                className="h-full max-h-64 w-full object-cover"
+                                src={buildPreviewSrc(document.quiz.quiz_id, entry.question.image.object_key)}
+                              />
+                            </div>
+                            <p className="text-xs text-muted-foreground">{dictionary.authoringPage.questionImageAlt}</p>
+                          </div>
+                        ) : (
+                          <p className="text-sm text-muted-foreground">{dictionary.authoringPage.noQuestionImage}</p>
+                        )}
+                        <Input accept={QUIZ_IMAGE_ACCEPT_VALUE} className="rounded-2xl bg-background/60" name="image" type="file" />
+                        <div className="flex flex-wrap gap-2">
+                          <button className="rounded-full border border-border px-4 py-2 text-sm" formAction={uploadQuizImageAction} name="scope" type="submit" value={`question:${entry.question.question_id}`}>
+                            {entry.question.image ? dictionary.authoringPage.replaceQuestionImage : dictionary.authoringPage.uploadQuestionImage}
+                          </button>
+                          {entry.question.image ? (
+                            <button className="rounded-full border border-border px-4 py-2 text-sm" formAction={removeQuizImageAction} name="scope" type="submit" value={`question:${entry.question.question_id}`}>
+                              {dictionary.authoringPage.removeQuestionImage}
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+
                       <div className="space-y-3">
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <p className="text-sm font-medium text-foreground">Options</p>
@@ -262,7 +344,6 @@ export default async function AuthoringPage({
 
                         {orderedOptions.map((option, optionIndex) => (
                           <div key={option.option_id} className="space-y-3 rounded-2xl border border-border/70 bg-background/50 p-3">
-                            <input name="optionId" type="hidden" value={option.option_id} />
                             <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
                               <Label className="flex-col items-start gap-2 text-sm text-muted-foreground" htmlFor={`option-${option.option_id}`}>
                                 <span>Option {optionIndex + 1}</span>
@@ -278,6 +359,48 @@ export default async function AuthoringPage({
                                 Correct answer
                               </Label>
                             </div>
+
+                            <div className="space-y-3 rounded-2xl border border-border/60 bg-background/40 p-3">
+                              <p className="text-sm font-medium text-foreground">Option image</p>
+                              {option.image ? (
+                                <div className="space-y-3">
+                                  <div className="overflow-hidden rounded-2xl border border-border/70 bg-canvas/70">
+                                    <img
+                                      alt={dictionary.authoringPage.optionImageAlt}
+                                      className="h-full max-h-56 w-full object-cover"
+                                      src={buildPreviewSrc(document.quiz.quiz_id, option.image.object_key)}
+                                    />
+                                  </div>
+                                  <p className="text-xs text-muted-foreground">{dictionary.authoringPage.optionImageAlt}</p>
+                                </div>
+                              ) : (
+                                <p className="text-sm text-muted-foreground">{dictionary.authoringPage.noOptionImage}</p>
+                              )}
+                              <Input accept={QUIZ_IMAGE_ACCEPT_VALUE} className="rounded-2xl bg-background/60" name="image" type="file" />
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  className="rounded-full border border-border px-4 py-2 text-sm"
+                                  formAction={uploadQuizImageAction}
+                                  name="scope"
+                                  type="submit"
+                                  value={`option:${entry.question.question_id}:${option.option_id}`}
+                                >
+                                  {option.image ? dictionary.authoringPage.replaceOptionImage : dictionary.authoringPage.uploadOptionImage}
+                                </button>
+                                {option.image ? (
+                                  <button
+                                    className="rounded-full border border-border px-4 py-2 text-sm"
+                                    formAction={removeQuizImageAction}
+                                    name="scope"
+                                    type="submit"
+                                    value={`option:${entry.question.question_id}:${option.option_id}`}
+                                  >
+                                    {dictionary.authoringPage.removeOptionImage}
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
+
                             <div className="flex flex-wrap gap-2">
                               <Button formAction={moveOptionAction} name="optionMove" value={`${option.option_id}:up`} variant="outline" disabled={optionIndex === 0}>
                                 Move up
@@ -319,8 +442,8 @@ export default async function AuthoringPage({
           </SectionCard>
         </div>
       ) : (
-        <SectionCard title="No quiz available" eyebrow="Authoring">
-          <p className="text-sm text-muted-foreground">Return to the dashboard to choose a seeded quiz.</p>
+        <SectionCard title={dictionary.authoringPage.noQuizTitle} eyebrow={dictionary.authoringPage.noQuizEyebrow}>
+          <p className="text-sm text-muted-foreground">{dictionary.authoringPage.noQuizDescription}</p>
         </SectionCard>
       )}
     </PageShell>

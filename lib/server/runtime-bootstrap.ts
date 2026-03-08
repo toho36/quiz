@@ -1,4 +1,3 @@
-import 'server-only';
 import { parseServerEnv } from '@/lib/env/server';
 import {
   ConfigurationError,

@@ -1,7 +1,11 @@
 import Link from 'next/link';
-import { runtimeRoutes } from '@/lib/shared/routes';
+import { getLocaleContext } from '@/lib/i18n/server';
+import { getRuntimeRoutes } from '@/lib/shared/routes';
 
-export default function RuntimeLayout({ children }: { children: React.ReactNode }) {
+export default async function RuntimeLayout({ children }: { children: React.ReactNode }) {
+  const { dictionary } = await getLocaleContext();
+  const runtimeRoutes = getRuntimeRoutes(dictionary.routes);
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap gap-3 border-b border-border pb-4 text-sm text-slate-300">

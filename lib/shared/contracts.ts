@@ -82,9 +82,12 @@ function asBoolean(input: unknown, label: string): boolean {
   return input;
 }
 
-function asInteger(input: unknown, label: string, minimum = 0): number {
+function asInteger(input: unknown, label: string, minimum = 0, maximum = Number.POSITIVE_INFINITY): number {
   assertCondition(typeof input === 'number' && Number.isInteger(input), `${label} must be an integer`);
   assertCondition(input >= minimum, `${label} must be at least ${minimum}`);
+  if (Number.isFinite(maximum)) {
+    assertCondition(input <= maximum, `${label} must be at most ${maximum}`);
+  }
   return input;
 }
 
@@ -138,6 +141,8 @@ const QUESTION_PHASES = ['question_open', 'question_closed', 'reveal', 'leaderbo
 const ROOM_PLAYER_STATUSES = ['waiting', 'connected', 'disconnected'] as const;
 const PLAYER_SUBMISSION_STATUSES = ['not_submitted', 'submitted', 'accepted', 'rejected', 'late', 'no_answer'] as const;
 const SUBMISSION_RECORD_STATUSES = ['accepted', 'rejected', 'late', 'no_answer'] as const;
+export const QUIZ_IMAGE_STORAGE_PROVIDERS = ['cloudflare_r2'] as const;
+export const QUIZ_IMAGE_CONTENT_TYPES = ['image/png', 'image/jpeg', 'image/webp'] as const;
 const HOST_ALLOWED_ACTIONS = [
   'start_game',
   'close_question',
@@ -154,6 +159,9 @@ export const CONTRACT_LIMITS = {
   multipleChoiceOptionCount: { min: 3, max: 6 },
   hostClaimTtlSeconds: 60,
   playerReconnectMaxTtlSeconds: 12 * 60 * 60,
+  quizImageMaxBytes: 5 * 1024 * 1024,
+  quizImageMaxDimension: 4096,
+  quizImageObjectKeyMaxLength: 512,
 } as const;
 
 export type QuizStatus = (typeof QUIZ_STATUSES)[number];
@@ -166,6 +174,17 @@ export type RoomPlayerStatus = (typeof ROOM_PLAYER_STATUSES)[number];
 export type PlayerSubmissionStatus = (typeof PLAYER_SUBMISSION_STATUSES)[number];
 export type SubmissionRecordStatus = (typeof SUBMISSION_RECORD_STATUSES)[number];
 export type HostAllowedAction = (typeof HOST_ALLOWED_ACTIONS)[number];
+export type QuizImageStorageProvider = (typeof QUIZ_IMAGE_STORAGE_PROVIDERS)[number];
+export type QuizImageContentType = (typeof QUIZ_IMAGE_CONTENT_TYPES)[number];
+
+export type QuizImageAssetReference = {
+  storage_provider: QuizImageStorageProvider;
+  object_key: string;
+  content_type: QuizImageContentType;
+  bytes: number;
+  width: number;
+  height: number;
+};
 
 export type RoomPolicy = {
   scoring_mode: ScoringMode;
@@ -193,6 +212,7 @@ export type AuthoringQuestion = {
   quiz_id: string;
   position: number;
   prompt: string;
+  image?: QuizImageAssetReference;
   question_type: QuestionType;
   evaluation_policy: EvaluationPolicy;
   base_points: number;
@@ -207,6 +227,7 @@ export type AuthoringQuestionOption = {
   question_id: string;
   position: number;
   text: string;
+  image?: QuizImageAssetReference;
   is_correct: boolean;
 };
 
@@ -288,6 +309,8 @@ export type RuntimeRoomPlayer = {
   display_name: string;
   status: RoomPlayerStatus;
   resume_token_hash: string;
+  resume_version: number;
+  resume_expires_at: string;
   joined_at: string;
   last_seen_at: string;
   score_total: number;
@@ -300,6 +323,7 @@ export type RuntimeQuestionSnapshot = {
   question_index: number;
   source_question_id: string;
   prompt: string;
+  image?: QuizImageAssetReference;
   question_type: QuestionType;
   evaluation_policy: EvaluationPolicy;
   base_points: number;
@@ -314,6 +338,7 @@ export type RuntimeQuestionOptionSnapshot = {
   author_position: number;
   display_position: number;
   text: string;
+  image?: QuizImageAssetReference;
   is_correct: boolean;
 };
 
@@ -371,11 +396,13 @@ export type PlayerRoomState = {
   active_question: {
     question_index: number;
     prompt: string;
+    image?: QuizImageAssetReference;
     question_type: QuestionType;
     display_options: Array<{
       option_id: string;
       display_position: number;
       text: string;
+      image?: QuizImageAssetReference;
     }>;
   } | null;
   self: {
@@ -412,6 +439,29 @@ function parseRoomPolicy(input: unknown, label: string): RoomPolicy {
   };
 }
 
+function parseOptionalQuizImageAssetReference(input: unknown, label: string): QuizImageAssetReference | undefined {
+  if (input === undefined || input === null) {
+    return undefined;
+  }
+
+  const record = asRecord(input, label);
+  const objectKey = asTrimmedString(record.object_key, `${label}.object_key`);
+
+  assertCondition(
+    objectKey.length <= CONTRACT_LIMITS.quizImageObjectKeyMaxLength,
+    `${label}.object_key must be at most ${CONTRACT_LIMITS.quizImageObjectKeyMaxLength} characters`,
+  );
+
+  return {
+    storage_provider: asEnumValue(record.storage_provider, QUIZ_IMAGE_STORAGE_PROVIDERS, `${label}.storage_provider`),
+    object_key: objectKey,
+    content_type: asEnumValue(record.content_type, QUIZ_IMAGE_CONTENT_TYPES, `${label}.content_type`),
+    bytes: asInteger(record.bytes, `${label}.bytes`, 1, CONTRACT_LIMITS.quizImageMaxBytes),
+    width: asInteger(record.width, `${label}.width`, 1, CONTRACT_LIMITS.quizImageMaxDimension),
+    height: asInteger(record.height, `${label}.height`, 1, CONTRACT_LIMITS.quizImageMaxDimension),
+  };
+}
+
 function parseAuthoringQuiz(input: unknown): AuthoringQuiz {
   const record = asRecord(input, 'quiz');
   return {
@@ -440,6 +490,7 @@ function parseAuthoringQuestion(input: unknown, label: string): AuthoringQuestio
     quiz_id: asTrimmedString(record.quiz_id, `${label}.quiz_id`),
     position: asInteger(record.position, `${label}.position`, 1),
     prompt: asTrimmedString(record.prompt, `${label}.prompt`),
+    image: parseOptionalQuizImageAssetReference(record.image, `${label}.image`),
     question_type: asEnumValue(record.question_type, QUESTION_TYPES, `${label}.question_type`),
     evaluation_policy: asEnumValue(record.evaluation_policy, EVALUATION_POLICIES, `${label}.evaluation_policy`),
     base_points: asInteger(record.base_points, `${label}.base_points`, 1),
@@ -458,6 +509,7 @@ function parseAuthoringOption(input: unknown, label: string): AuthoringQuestionO
     question_id: asTrimmedString(record.question_id, `${label}.question_id`),
     position: asInteger(record.position, `${label}.position`, 1),
     text: asTrimmedString(record.text, `${label}.text`),
+    image: parseOptionalQuizImageAssetReference(record.image, `${label}.image`),
     is_correct: asBoolean(record.is_correct, `${label}.is_correct`),
   };
 }
@@ -668,6 +720,8 @@ export const runtimeRoomPlayerSchema = createSchema<RuntimeRoomPlayer>((input) =
     display_name: asTrimmedString(record.display_name, 'runtimeRoomPlayer.display_name'),
     status: asEnumValue(record.status, ROOM_PLAYER_STATUSES, 'runtimeRoomPlayer.status'),
     resume_token_hash: asTrimmedString(record.resume_token_hash, 'runtimeRoomPlayer.resume_token_hash'),
+    resume_version: asInteger(record.resume_version, 'runtimeRoomPlayer.resume_version', 1),
+    resume_expires_at: asIsoTimestamp(record.resume_expires_at, 'runtimeRoomPlayer.resume_expires_at'),
     joined_at: asIsoTimestamp(record.joined_at, 'runtimeRoomPlayer.joined_at'),
     last_seen_at: asIsoTimestamp(record.last_seen_at, 'runtimeRoomPlayer.last_seen_at'),
     score_total: asInteger(record.score_total, 'runtimeRoomPlayer.score_total', 0),
@@ -683,6 +737,7 @@ export const runtimeQuestionSnapshotSchema = createSchema<RuntimeQuestionSnapsho
     question_index: asInteger(record.question_index, 'runtimeQuestionSnapshot.question_index', 0),
     source_question_id: asTrimmedString(record.source_question_id, 'runtimeQuestionSnapshot.source_question_id'),
     prompt: asTrimmedString(record.prompt, 'runtimeQuestionSnapshot.prompt'),
+    image: parseOptionalQuizImageAssetReference(record.image, 'runtimeQuestionSnapshot.image'),
     question_type: asEnumValue(record.question_type, QUESTION_TYPES, 'runtimeQuestionSnapshot.question_type'),
     evaluation_policy: asEnumValue(record.evaluation_policy, EVALUATION_POLICIES, 'runtimeQuestionSnapshot.evaluation_policy'),
     base_points: asInteger(record.base_points, 'runtimeQuestionSnapshot.base_points', 1),
@@ -703,6 +758,7 @@ export const runtimeQuestionOptionSnapshotSchema = createSchema<RuntimeQuestionO
     author_position: asInteger(record.author_position, 'runtimeQuestionOptionSnapshot.author_position', 1),
     display_position: asInteger(record.display_position, 'runtimeQuestionOptionSnapshot.display_position', 1),
     text: asTrimmedString(record.text, 'runtimeQuestionOptionSnapshot.text'),
+    image: parseOptionalQuizImageAssetReference(record.image, 'runtimeQuestionOptionSnapshot.image'),
     is_correct: asBoolean(record.is_correct, 'runtimeQuestionOptionSnapshot.is_correct'),
   };
 });
@@ -796,6 +852,7 @@ function parseActiveQuestion(input: unknown, label: string): PlayerRoomState['ac
       option_id: asTrimmedString(option.option_id, `${label}.display_options[${index}].option_id`),
       display_position: asInteger(option.display_position, `${label}.display_options[${index}].display_position`, 1),
       text: asTrimmedString(option.text, `${label}.display_options[${index}].text`),
+      image: parseOptionalQuizImageAssetReference(option.image, `${label}.display_options[${index}].image`),
     };
   });
 
@@ -804,6 +861,7 @@ function parseActiveQuestion(input: unknown, label: string): PlayerRoomState['ac
   return {
     question_index: asInteger(record.question_index, `${label}.question_index`, 0),
     prompt: asTrimmedString(record.prompt, `${label}.prompt`),
+    image: parseOptionalQuizImageAssetReference(record.image, `${label}.image`),
     question_type: asEnumValue(record.question_type, QUESTION_TYPES, `${label}.question_type`),
     display_options: displayOptions,
   };

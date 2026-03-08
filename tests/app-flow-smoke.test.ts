@@ -130,7 +130,7 @@ describe('initial application flow smoke', () => {
     expect(hostState.shared_room.lifecycle_state).toBe('lobby');
     expect(hostState.allowed_actions).toEqual(['start_game', 'abort_game']);
     expect(hostState.shared_room.room_code).toBe(room.room_code);
-    expect(binding.resumeExpiresAt).toBe('2026-03-07T12:00:00.000Z');
+    expect(binding.resumeExpiresAt).toBe('2026-03-07T00:00:00.000Z');
   });
 
   test('supports question and option authoring flows before publishing a draft quiz', async () => {
@@ -431,7 +431,7 @@ describe('initial application flow smoke', () => {
       displayName: 'Abort Player',
     });
 
-    expect(initialBinding.resumeExpiresAt).toBe('2026-03-07T12:20:00.000Z');
+    expect(initialBinding.resumeExpiresAt).toBe('2026-03-07T00:20:00.000Z');
     expect(app.getHostRoomState({ actor: authorActor, roomCode: room.room_code, transportSessionId: hostTransportSessionId }).allowed_actions).toEqual([
       'start_game',
       'abort_game',

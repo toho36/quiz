@@ -26,7 +26,7 @@ async function loadAuthorAuthModule() {
       return mockedClerkAuthState;
     },
   }));
-  return import('@/lib/server/author-auth');
+  return import(`@/lib/server/author-auth?server-author-auth=${Date.now()}-${Math.random()}`);
 }
 
 describe('protected author resolver', () => {

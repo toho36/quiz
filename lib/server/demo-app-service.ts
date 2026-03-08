@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import type { AuthenticatedAuthor } from '@/lib/server/authoring-service';
+import type { AuthenticatedAuthor, AuthoringQuizStore } from '@/lib/server/authoring-service';
 import { createAuthoringService } from '@/lib/server/authoring-service';
 import {
   addOptionToQuizDocument,
@@ -33,6 +33,13 @@ import {
 } from '@/lib/server/runtime-spacetimedb-bootstrap';
 import { createDemoSeedQuizDocuments } from '@/lib/server/demo-seed';
 import {
+  buildQuizImageObjectKey,
+  QUIZ_IMAGE_STORED_BYTES_CAP,
+  storeQuizImageUpload,
+  validateQuizImageFile,
+} from '@/lib/server/quiz-image-assets';
+import { createDefaultQuizImageStore, type QuizImageStore } from '@/lib/server/quiz-image-store';
+import {
   isExpectedStructuredLogError,
   writeStructuredLog,
   type StructuredLogMetadata,
@@ -42,6 +49,7 @@ import { createRuntimeGameplayService, type AcceptedAnswerSubmission } from '@/l
 import { AuthorizationError, InvalidOperationError, NotFoundError } from '@/lib/server/service-errors';
 import {
   answerSubmissionCommandSchema,
+  authoringQuizDocumentSchema,
   hostRoomStateSchema,
   playerJoinCommandSchema,
   playerReconnectCommandSchema,
@@ -51,11 +59,13 @@ import {
   type HostAllowedAction,
   type HostRoomState,
   type PlayerLatestOutcome,
+  type QuizImageAssetReference,
   type RuntimeQuestionOptionSnapshot,
   type RuntimeQuestionSnapshot,
   type RuntimeQuestionState,
   type RuntimeRoom,
   type RuntimeRoomPlayer,
+  runtimeRoomSchema,
 } from '@/lib/shared/contracts';
 
 type AppClock = () => Date;
@@ -72,6 +82,12 @@ type GuestBinding = {
   roomId: string;
   roomCode: string;
   roomPlayerId: string;
+  resumeToken: string;
+  resumeExpiresAt: string;
+  resumeVersion: number;
+};
+
+type PlayerSessionBinding = GuestBinding & {
   resumeToken: string;
   resumeExpiresAt: string;
 };
@@ -104,6 +120,8 @@ type AppServiceDependencies = {
   runtimeProvisioner?: RuntimeBootstrapProvisioner | null;
   hostClaimSigner?: HostClaimSigner | null;
   clock?: AppClock;
+  quizImageStore?: QuizImageStore;
+  saveQuizDocumentOverride?: AuthoringQuizStore['saveQuizDocument'];
   seedDocuments?: AuthoringQuizDocument[];
 };
 
@@ -127,11 +145,7 @@ function createInitialState(): AppState {
 }
 
 function createDemoHostClaimSigner(): HostClaimSigner {
-  return {
-    async signHostClaim(claims) {
-      return `demo-host-claim:${claims.room_id}:${claims.jti}`;
-    },
-  };
+  return createRuntimeHostClaimSigner();
 }
 
 function hashResumeToken(token: string) {
@@ -147,6 +161,8 @@ export function createDemoAppService({
   runtimeProvisioner = null,
   hostClaimSigner = createDemoHostClaimSigner(),
   clock = () => new Date(),
+  quizImageStore = createDefaultQuizImageStore(),
+  saveQuizDocumentOverride,
   seedDocuments = createDemoSeedQuizDocuments(),
 }: AppServiceDependencies = {}) {
   const state = createInitialState();
@@ -202,6 +218,9 @@ export function createDemoAppService({
         return getAuthoringStore().quizStore.getQuizDocument(quizId);
       },
       async saveQuizDocument(document) {
+        if (saveQuizDocumentOverride) {
+          return saveQuizDocumentOverride(document);
+        }
         return getAuthoringStore().quizStore.saveQuizDocument(document);
       },
     },
@@ -256,9 +275,337 @@ export function createDemoAppService({
     return session;
   }
 
+  function mustQuestionDocument(document: AuthoringQuizDocument, questionId: string) {
+    const entry = document.questions.find((question) => question.question.question_id === questionId);
+    if (!entry) {
+      throw new NotFoundError(`Question ${questionId} was not found`);
+    }
+    return entry;
+  }
+
+  function mustOptionDocument(document: AuthoringQuizDocument, questionId: string, optionId: string) {
+    const entry = mustQuestionDocument(document, questionId);
+    const option = entry.options.find((candidate) => candidate.option_id === optionId);
+    if (!option) {
+      throw new NotFoundError(`Option ${optionId} was not found`);
+    }
+    return option;
+  }
+
+  function findQuizImageReference(document: AuthoringQuizDocument, objectKey: string) {
+    for (const entry of document.questions) {
+      if (entry.question.image?.object_key === objectKey) {
+        return entry.question.image;
+      }
+      const option = entry.options.find((candidate) => candidate.image?.object_key === objectKey);
+      if (option?.image) {
+        return option.image;
+      }
+    }
+    return null;
+  }
+
+  function findActiveQuestionImageReference(session: RoomSession, objectKey: string) {
+    const activeQuestion = buildActiveQuestion(session);
+    if (activeQuestion?.image?.object_key === objectKey) {
+      return activeQuestion.image;
+    }
+    return activeQuestion?.display_options.find((option) => option.image?.object_key === objectKey)?.image ?? null;
+  }
+
+  function isRoomStillReadable(session: RoomSession, currentTime = Date.parse(clock().toISOString())) {
+    if (session.room.lifecycle_state === 'expired') {
+      return false;
+    }
+    if (
+      (session.room.lifecycle_state === 'finished' || session.room.lifecycle_state === 'aborted') &&
+      currentTime > Date.parse(session.room.expires_at)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  function expireRoomIfReadabilityEnded(session: RoomSession, currentTime = Date.parse(clock().toISOString())) {
+    if (session.room.lifecycle_state === 'expired') {
+      return true;
+    }
+    if (
+      (session.room.lifecycle_state === 'finished' || session.room.lifecycle_state === 'aborted') &&
+      currentTime > Date.parse(session.room.expires_at)
+    ) {
+      session.room = runtimeRoomSchema.parse({
+        ...session.room,
+        lifecycle_state: 'expired',
+      });
+      return true;
+    }
+    return false;
+  }
+
+  function collectRoomSnapshotImageReferences(session: RoomSession) {
+    const references = new Map<string, QuizImageAssetReference>();
+    for (const question of session.questionSnapshots) {
+      if (question.image) {
+        references.set(question.image.object_key, question.image);
+      }
+    }
+    for (const option of session.optionSnapshots) {
+      if (option.image) {
+        references.set(option.image.object_key, option.image);
+      }
+    }
+    return [...references.values()];
+  }
+
+  function doesReadableRoomStillReferenceObjectKey(quizId: string, objectKey: string) {
+    const currentTime = Date.parse(clock().toISOString());
+    return [...state.roomsByCode.values()].some((session) => {
+      if (session.room.source_quiz_id !== quizId) {
+        return false;
+      }
+      if (!isRoomStillReadable(session, currentTime)) {
+        return false;
+      }
+      return (
+        session.questionSnapshots.some((question) => question.image?.object_key === objectKey) ||
+        session.optionSnapshots.some((option) => option.image?.object_key === objectKey)
+      );
+    });
+  }
+
+  function reclaimableQuizImageBytes(input: {
+    quizId: string;
+    document: AuthoringQuizDocument;
+    reference: QuizImageAssetReference | null | undefined;
+  }) {
+    if (!input.reference) {
+      return 0;
+    }
+    if (findQuizImageReference(input.document, input.reference.object_key)) {
+      return 0;
+    }
+    if (doesReadableRoomStillReferenceObjectKey(input.quizId, input.reference.object_key)) {
+      return 0;
+    }
+    return input.reference.bytes;
+  }
+
+  async function reclaimStaleQuizImageObject(input: {
+    quizId: string;
+    document: AuthoringQuizDocument;
+    reference: QuizImageAssetReference | null | undefined;
+  }) {
+    if (reclaimableQuizImageBytes(input) < 1 || !input.reference) {
+      return;
+    }
+    await quizImageStore.deleteObject({ objectKey: input.reference.object_key });
+  }
+
+  async function reclaimDeferredQuizImageObjects() {
+    const currentTime = Date.parse(clock().toISOString());
+    const documentsByQuizId = new Map<string, AuthoringQuizDocument>();
+    const processedObjectKeys = new Set<string>();
+
+    for (const session of state.roomsByCode.values()) {
+      if (isRoomStillReadable(session, currentTime)) {
+        continue;
+      }
+
+      expireRoomIfReadabilityEnded(session, currentTime);
+      const quizId = session.room.source_quiz_id;
+      let document = documentsByQuizId.get(quizId);
+      if (!document) {
+        const stored = await getAuthoringStore().quizStore.getQuizDocument(quizId);
+        if (!stored) {
+          continue;
+        }
+        document = authoringQuizDocumentSchema.parse(stored);
+        documentsByQuizId.set(quizId, document);
+      }
+
+      for (const reference of collectRoomSnapshotImageReferences(session)) {
+        if (processedObjectKeys.has(reference.object_key)) {
+          continue;
+        }
+        processedObjectKeys.add(reference.object_key);
+        await reclaimStaleQuizImageObject({ quizId, document, reference });
+      }
+    }
+  }
+
+  async function assertWithinQuizImageStorageCap(incomingBytes: number, reclaimableBytes = 0) {
+    const currentStoredBytes = await quizImageStore.getStoredBytes();
+    if (currentStoredBytes + incomingBytes - reclaimableBytes > QUIZ_IMAGE_STORED_BYTES_CAP) {
+      throw new InvalidOperationError('Quiz image storage is full. Uploading this file would exceed the 8 GiB limit.');
+    }
+  }
+
+  async function replaceQuizImageWithinQuotaLock(input: {
+    actor: AuthenticatedAuthor;
+    quizId: string;
+    uploaded: Awaited<ReturnType<typeof storeQuizImageUpload>>;
+    buildNextDocument(current: AuthoringQuizDocument): {
+      nextDocument: AuthoringQuizDocument;
+      previousImage: QuizImageAssetReference | null | undefined;
+    };
+  }) {
+    return quizImageStore.runWithQuotaLock(async () => {
+      await reclaimDeferredQuizImageObjects();
+
+      const current = await authoringService.loadOwnedQuizDocument({ actor: input.actor, quizId: input.quizId });
+      const { nextDocument, previousImage } = input.buildNextDocument(current);
+
+      await assertWithinQuizImageStorageCap(
+        input.uploaded.bytes,
+        reclaimableQuizImageBytes({ quizId: input.quizId, document: nextDocument, reference: previousImage }),
+      );
+
+      await quizImageStore.putObject({
+        objectKey: input.uploaded.object_key,
+        contentType: input.uploaded.content_type,
+        data: input.uploaded.data,
+      });
+
+      try {
+        const saved = await authoringService.saveQuizDocument({
+          actor: input.actor,
+          document: nextDocument,
+        });
+        await reclaimStaleQuizImageObject({ quizId: input.quizId, document: saved, reference: previousImage });
+        return saved;
+      } catch (error) {
+        await quizImageStore.deleteObject({ objectKey: input.uploaded.object_key });
+        throw error;
+      }
+    });
+  }
+
+  async function readStoredQuizImageAsset(reference: QuizImageAssetReference) {
+    const asset = await quizImageStore.getObject({ objectKey: reference.object_key });
+    if (!asset) {
+      throw new NotFoundError(`Image asset ${reference.object_key} bytes were not found`);
+    }
+    return {
+      ...reference,
+      bytes: asset.bytes,
+      content_type: asset.content_type,
+      data: asset.data,
+    };
+  }
+
+  async function replaceQuestionImage(input: { actor: AuthenticatedAuthor; quizId: string; questionId: string; file: File }) {
+    validateQuizImageFile(input.file);
+    const uploaded = await storeQuizImageUpload({
+      file: input.file,
+      objectKey: buildQuizImageObjectKey({
+        quizId: input.quizId,
+        questionId: input.questionId,
+        contentType: input.file.type as QuizImageAssetReference['content_type'],
+      }),
+    });
+    return replaceQuizImageWithinQuotaLock({
+      actor: input.actor,
+      quizId: input.quizId,
+      uploaded,
+      buildNextDocument(current) {
+        const currentQuestion = mustQuestionDocument(current, input.questionId);
+        const previousImage = currentQuestion.question.image;
+        return {
+          previousImage,
+          nextDocument: {
+            ...current,
+            questions: current.questions.map((entry) =>
+              entry.question.question_id === input.questionId
+                ? {
+                    ...entry,
+                    question: {
+                      ...entry.question,
+                      image: {
+                        storage_provider: uploaded.storage_provider,
+                        object_key: uploaded.object_key,
+                        content_type: uploaded.content_type,
+                        bytes: uploaded.bytes,
+                        width: uploaded.width,
+                        height: uploaded.height,
+                      },
+                    },
+                  }
+                : entry,
+            ),
+          },
+        };
+      },
+    });
+  }
+
+  async function replaceOptionImage(input: {
+    actor: AuthenticatedAuthor;
+    quizId: string;
+    questionId: string;
+    optionId: string;
+    file: File;
+  }) {
+    validateQuizImageFile(input.file);
+    const uploaded = await storeQuizImageUpload({
+      file: input.file,
+      objectKey: buildQuizImageObjectKey({
+        quizId: input.quizId,
+        questionId: input.questionId,
+        optionId: input.optionId,
+        contentType: input.file.type as QuizImageAssetReference['content_type'],
+      }),
+    });
+    return replaceQuizImageWithinQuotaLock({
+      actor: input.actor,
+      quizId: input.quizId,
+      uploaded,
+      buildNextDocument(current) {
+        const currentOption = mustOptionDocument(current, input.questionId, input.optionId);
+        const previousImage = currentOption.image;
+        return {
+          previousImage,
+          nextDocument: {
+            ...current,
+            questions: current.questions.map((entry) =>
+              entry.question.question_id === input.questionId
+                ? {
+                    ...entry,
+                    options: entry.options.map((option) =>
+                      option.option_id === input.optionId
+                        ? {
+                            ...option,
+                            image: {
+                              storage_provider: uploaded.storage_provider,
+                              object_key: uploaded.object_key,
+                              content_type: uploaded.content_type,
+                              bytes: uploaded.bytes,
+                              width: uploaded.width,
+                              height: uploaded.height,
+                            },
+                          }
+                        : option,
+                    ),
+                  }
+                : entry,
+            ),
+          },
+        };
+      },
+    });
+  }
+
   function requireRoomHostOwner(session: RoomSession, actor: AuthenticatedAuthor) {
     if (session.room.host_binding.clerk_user_id !== actor.clerkUserId) {
       throw new AuthorizationError('Only the room owner can manage this host flow');
+    }
+  }
+
+  function assertRoomStillReadable(session: RoomSession) {
+    const currentTime = Date.parse(clock().toISOString());
+    if (!isRoomStillReadable(session, currentTime)) {
+      expireRoomIfReadabilityEnded(session, currentTime);
+      throw new InvalidOperationError('Expired rooms are no longer readable');
     }
   }
 
@@ -332,6 +679,24 @@ export function createDemoAppService({
 
   function currentEpochSeconds() {
     return Math.floor(clock().getTime() / 1000);
+  }
+
+  function createGuestBinding(session: RoomSession, player: RuntimeRoomPlayer, resumeToken: string): GuestBinding {
+    return {
+      roomId: session.room.room_id,
+      roomCode: session.room.room_code,
+      roomPlayerId: player.room_player_id,
+      resumeToken,
+      resumeExpiresAt: player.resume_expires_at,
+      resumeVersion: player.resume_version,
+    };
+  }
+
+  function createPlayerSessionBinding(binding: GuestBinding, resumeToken: string): PlayerSessionBinding {
+    return {
+      ...binding,
+      resumeToken,
+    };
   }
 
   function syncRoomLifecycle(session: RoomSession) {
@@ -465,6 +830,115 @@ export function createDemoAppService({
         quizId: input.quizId,
         mutate: (current, now) => deleteOptionFromQuizDocument(current, now, input.questionId, input.optionId),
       });
+    },
+
+    async uploadQuestionImage(input: { actor: AuthenticatedAuthor; quizId: string; questionId: string; file: File }) {
+      return replaceQuestionImage(input);
+    },
+
+    async removeQuestionImage(input: { actor: AuthenticatedAuthor; quizId: string; questionId: string }) {
+      await reclaimDeferredQuizImageObjects();
+      const current = await authoringService.loadOwnedQuizDocument({ actor: input.actor, quizId: input.quizId });
+      const currentQuestion = mustQuestionDocument(current, input.questionId);
+      const nextDocument = {
+        ...current,
+        questions: current.questions.map((entry) =>
+          entry.question.question_id === input.questionId
+            ? {
+                ...entry,
+                question: {
+                  ...entry.question,
+                  image: undefined,
+                },
+              }
+            : entry,
+        ),
+      };
+      const saved = await authoringService.saveQuizDocument({
+        actor: input.actor,
+        document: nextDocument,
+      });
+      await reclaimStaleQuizImageObject({ quizId: input.quizId, document: saved, reference: currentQuestion.question.image });
+      return saved;
+    },
+
+    async uploadOptionImage(input: {
+      actor: AuthenticatedAuthor;
+      quizId: string;
+      questionId: string;
+      optionId: string;
+      file: File;
+    }) {
+      return replaceOptionImage(input);
+    },
+
+    async removeOptionImage(input: { actor: AuthenticatedAuthor; quizId: string; questionId: string; optionId: string }) {
+      await reclaimDeferredQuizImageObjects();
+      const current = await authoringService.loadOwnedQuizDocument({ actor: input.actor, quizId: input.quizId });
+      const currentOption = mustOptionDocument(current, input.questionId, input.optionId);
+      const nextDocument = {
+        ...current,
+        questions: current.questions.map((entry) =>
+          entry.question.question_id === input.questionId
+            ? {
+                ...entry,
+                options: entry.options.map((option) =>
+                  option.option_id === input.optionId
+                    ? {
+                        ...option,
+                        image: undefined,
+                      }
+                    : option,
+                ),
+              }
+            : entry,
+        ),
+      };
+      const saved = await authoringService.saveQuizDocument({
+        actor: input.actor,
+        document: nextDocument,
+      });
+      await reclaimStaleQuizImageObject({ quizId: input.quizId, document: saved, reference: currentOption.image });
+      return saved;
+    },
+
+    async readAuthoringQuizImageAsset(input: { actor: AuthenticatedAuthor; quizId: string; objectKey: string }) {
+      const current = await authoringService.loadOwnedQuizDocument({ actor: input.actor, quizId: input.quizId });
+      const reference = findQuizImageReference(current, input.objectKey);
+      if (!reference) {
+        throw new NotFoundError(`Image asset ${input.objectKey} was not found`);
+      }
+      return readStoredQuizImageAsset(reference);
+    },
+
+    async readHostRuntimeQuizImageAsset(input: { actor: AuthenticatedAuthor; roomCode: string; objectKey: string }) {
+      const session = mustRoomSession(input.roomCode);
+      requireRoomHostOwner(session, input.actor);
+      assertRoomStillReadable(session);
+      const reference = findActiveQuestionImageReference(session, input.objectKey);
+      if (!reference) {
+        throw new NotFoundError(`Runtime image asset ${input.objectKey} was not found`);
+      }
+      return readStoredQuizImageAsset(reference);
+    },
+
+    async readPlayerRuntimeQuizImageAsset(input: { guestSessionId: string; roomCode: string; objectKey: string }) {
+      const binding = getGuestBinding(input.guestSessionId, input.roomCode);
+      if (!binding) {
+        throw new AuthorizationError('Join the room before loading runtime quiz images');
+      }
+      const session = mustRoomSession(binding.roomCode);
+      syncRoomLifecycle(session);
+      assertRoomStillReadable(session);
+      const player = resolvePlayerForBinding(session, binding);
+      if (!player || binding.resumeVersion !== player.resume_version) {
+        throw new AuthorizationError('Player session is no longer authorized for this room');
+      }
+      const reference = findActiveQuestionImageReference(session, input.objectKey);
+      if (!reference) {
+        throw new NotFoundError(`Runtime image asset ${input.objectKey} was not found`);
+      }
+      return readStoredQuizImageAsset(reference);
     },
 
     async publishQuiz({ actor, quizId }: { actor: AuthenticatedAuthor; quizId: string }) {
@@ -705,7 +1179,7 @@ export function createDemoAppService({
       }
     },
 
-    joinRoom(input: { guestSessionId: string; roomCode: string; displayName: string }) {
+    joinRoom(input: { guestSessionId: string; roomCode: string; displayName: string }): PlayerSessionBinding {
       let session: RoomSession | null = null;
       let normalizedRoomCode = normalizeRoomCode(input.roomCode);
 
@@ -714,22 +1188,9 @@ export function createDemoAppService({
         normalizedRoomCode = normalizeRoomCode(command.room_code);
         const existingBinding = getGuestBinding(input.guestSessionId, normalizedRoomCode);
         if (existingBinding) {
-          const existingSession = state.roomsByCode.get(normalizedRoomCode);
-          if (existingSession) {
-            syncRoomLifecycle(existingSession);
-          }
-          if (existingSession && resolvePlayerForBinding(existingSession, existingBinding)) {
-            logRuntimeEvent('runtime.player_join', {
-              roomId: existingBinding.roomId,
-              roomCode: normalizedRoomCode,
-              roomPlayerId: existingBinding.roomPlayerId,
-              lifecycleState: existingSession.room.lifecycle_state,
-              bindingReused: true,
-            });
-            return existingBinding;
-          }
-          deleteGuestBinding(input.guestSessionId, normalizedRoomCode);
+          throw new InvalidOperationError('Room already joined in this guest session');
         }
+
         session = mustRoomSession(normalizedRoomCode);
         syncRoomLifecycle(session);
         const roomPlayerId = `player-${state.nextPlayerNumber}`;
@@ -743,13 +1204,8 @@ export function createDemoAppService({
         });
         session.players = [...session.players, joinedPlayer];
         state.nextPlayerNumber += 1;
-        const binding = {
-          roomId: session.room.room_id,
-          roomCode: normalizedRoomCode,
-          roomPlayerId,
-          resumeToken,
-          resumeExpiresAt: session.room.expires_at,
-        };
+
+        const binding = createGuestBinding(session, joinedPlayer, resumeToken);
         setGuestBinding(input.guestSessionId, binding);
         logRuntimeEvent('runtime.player_join', {
           roomId: session.room.room_id,
@@ -758,7 +1214,7 @@ export function createDemoAppService({
           lifecycleState: session.room.lifecycle_state,
           bindingReused: false,
         });
-        return binding;
+        return createPlayerSessionBinding(binding, resumeToken);
       } catch (error) {
         logRuntimeFailure('runtime.player_join.failed', error, {
           roomId: session?.room.room_id ?? null,
@@ -768,7 +1224,7 @@ export function createDemoAppService({
       }
     },
 
-    reconnectPlayer(input: { guestSessionId: string; roomCode: string; roomId: string; roomPlayerId: string; resumeToken: string }) {
+    reconnectPlayer(input: { guestSessionId: string; roomCode: string; roomId: string; roomPlayerId: string; resumeToken: string }): PlayerSessionBinding {
       const normalizedRoomCode = normalizeRoomCode(input.roomCode);
       let session: RoomSession | null = null;
 
@@ -788,13 +1244,7 @@ export function createDemoAppService({
         });
         session.players = reconnected.updatedPlayers;
         clearReplacedGuestBindings(normalizedRoomCode, input.roomPlayerId, input.guestSessionId);
-        const binding = {
-          roomId: session.room.room_id,
-          roomCode: normalizedRoomCode,
-          roomPlayerId: input.roomPlayerId,
-          resumeToken: reconnected.resumeToken,
-          resumeExpiresAt: reconnected.resumeExpiresAt,
-        };
+        const binding = createGuestBinding(session, reconnected.player, reconnected.resumeToken);
         setGuestBinding(input.guestSessionId, binding);
         logRuntimeEvent('runtime.player_reconnect', {
           roomId: session.room.room_id,
@@ -803,7 +1253,7 @@ export function createDemoAppService({
           lifecycleState: session.room.lifecycle_state,
           questionPhase: session.questionState?.phase ?? null,
         });
-        return binding;
+        return createPlayerSessionBinding(binding, reconnected.resumeToken);
       } catch (error) {
         logRuntimeFailure('runtime.player_reconnect.failed', error, {
           roomId: session?.room.room_id ?? input.roomId,
@@ -823,6 +1273,9 @@ export function createDemoAppService({
       syncRoomLifecycle(session);
       const player = resolvePlayerForBinding(session, binding);
       if (!player) {
+        return null;
+      }
+      if (binding.resumeVersion !== player.resume_version) {
         return null;
       }
       return playerRoomStateSchema.parse({
@@ -856,8 +1309,8 @@ export function createDemoAppService({
       const session = mustRoomSession(binding.roomCode);
       syncRoomLifecycle(session);
       const player = resolvePlayerForBinding(session, binding);
-      if (!player) {
-        throw new AuthorizationError('This player session has been replaced. Reconnect before submitting answers.');
+      if (!player || binding.resumeVersion !== player.resume_version) {
+        throw new AuthorizationError('Player session has been replaced by a newer reconnect');
       }
       const question = getCurrentQuestionSnapshot(session);
       if (!session.questionState || !question) {

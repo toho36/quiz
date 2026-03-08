@@ -1,7 +1,11 @@
 import Link from 'next/link';
-import { workspaceRoutes } from '@/lib/shared/routes';
+import { getLocaleContext } from '@/lib/i18n/server';
+import { getWorkspaceRoutes } from '@/lib/shared/routes';
 
-export default function WorkspaceLayout({ children }: { children: React.ReactNode }) {
+export default async function WorkspaceLayout({ children }: { children: React.ReactNode }) {
+  const { dictionary } = await getLocaleContext();
+  const workspaceRoutes = getWorkspaceRoutes(dictionary.routes);
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap gap-3 border-b border-border pb-4 text-sm text-slate-300">

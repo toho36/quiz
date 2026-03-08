@@ -22,6 +22,7 @@ import { InvalidOperationError } from '@/lib/server/service-errors';
 
 const ACTIVE_ROOM_TTL_MS = 2 * 60 * 60 * 1000;
 const POST_GAME_TTL_MS = 30 * 60 * 1000;
+const MAX_RESUME_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 
 export type AcceptedAnswerSubmission = Pick<AnswerSubmissionCommand, 'room_id' | 'question_index' | 'selected_option_ids'> & {
   room_player_id: string;
@@ -54,6 +55,8 @@ export function createRuntimeGameplayService({ clock = () => new Date() }: Runti
       display_name: input.displayName,
       status: 'connected',
       resume_token_hash: input.resumeTokenHash,
+      resume_version: 1,
+      resume_expires_at: resolveResumeTokenExpiry(room, joinedAt),
       joined_at: joinedAt,
       last_seen_at: joinedAt,
       score_total: 0,
@@ -83,14 +86,19 @@ export function createRuntimeGameplayService({ clock = () => new Date() }: Runti
     if (!player) {
       throw new InvalidOperationError('Reconnect requires a known room-scoped player');
     }
+    if (Date.parse(reconnectedAt) > Date.parse(player.resume_expires_at)) {
+      throw new InvalidOperationError('expired_resume_token');
+    }
     if (input.hashResumeToken(command.resume_token) !== player.resume_token_hash) {
-      throw new InvalidOperationError('Stale resume tokens are rejected');
+      throw new InvalidOperationError('stale_resume_token');
     }
 
     const nextResumeToken = input.generateResumeToken();
     const updatedPlayer = runtimeRoomPlayerSchema.parse({
       ...player,
       resume_token_hash: input.hashResumeToken(nextResumeToken),
+      resume_version: player.resume_version + 1,
+      resume_expires_at: resolveResumeTokenExpiry(room, reconnectedAt),
       last_seen_at: reconnectedAt,
       status: 'connected',
     });
@@ -99,7 +107,7 @@ export function createRuntimeGameplayService({ clock = () => new Date() }: Runti
       player: updatedPlayer,
       updatedPlayers: players.map((entry) => (entry.room_player_id === updatedPlayer.room_player_id ? updatedPlayer : entry)),
       resumeToken: nextResumeToken,
-      resumeExpiresAt: room.expires_at,
+      resumeExpiresAt: updatedPlayer.resume_expires_at,
     };
   }
 
@@ -141,6 +149,7 @@ export function createRuntimeGameplayService({ clock = () => new Date() }: Runti
     return runtimeRoomSchema.parse({
       ...room,
       lifecycle_state: 'aborted',
+      current_question_index: null,
       ended_at: endedAt,
       expires_at: addDuration(endedAt, POST_GAME_TTL_MS),
     });
@@ -519,6 +528,11 @@ function nextJoinOrder(players: RuntimeRoomPlayer[]) {
 
 function addDuration(timestamp: string, milliseconds: number) {
   return new Date(Date.parse(timestamp) + milliseconds).toISOString();
+}
+
+function resolveResumeTokenExpiry(room: RuntimeRoom, issuedAt: string) {
+  const remainingRoomMs = Math.max(0, Date.parse(room.expires_at) - Date.parse(issuedAt));
+  return addDuration(issuedAt, Math.min(MAX_RESUME_TOKEN_TTL_MS, remainingRoomMs));
 }
 
 function now(clock: () => Date) {

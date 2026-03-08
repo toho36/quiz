@@ -3,9 +3,47 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test';
 import { createInMemoryAuthoringSpacetimeClientFactory } from '@/tests/support/in-memory-authoring-spacetime';
 
+function installSpacetimeDbMock() {
+  class MockDbConnectionImpl {}
+
+  class MockDbConnectionBuilder {
+    constructor(..._args: unknown[]) {}
+
+    withUri() {
+      return this;
+    }
+
+    withDatabaseName() {
+      return this;
+    }
+
+    withToken() {
+      return this;
+    }
+
+    onConnect() {
+      return this;
+    }
+
+    build() {
+      return new MockDbConnectionImpl();
+    }
+  }
+
+  mock.module('spacetimedb', () => ({
+    DbConnectionBuilder: MockDbConnectionBuilder,
+    DbConnectionImpl: MockDbConnectionImpl,
+    procedureSchema: () => ({}),
+    procedures: () => ({}),
+    reducers: () => ({ reducersType: { reducers: {} } }),
+    schema: () => ({ schemaType: { tables: {} } }),
+    t: new Proxy({}, { get: (_target, property) => (...args: unknown[]) => ({ property, args }) }),
+  }));
+}
+
 async function loadAppServiceModule() {
-  mock.module('server-only', () => ({}));
-  return import('@/lib/server/app-service');
+  installSpacetimeDbMock();
+  return import(`@/lib/server/app-service?app-service-composition=${Date.now()}-${Math.random()}`);
 }
 
 const ORIGINAL_APP_ENV = process.env.NEXT_PUBLIC_APP_ENV;
@@ -20,6 +58,7 @@ const actor = {
 };
 
 afterEach(() => {
+  mock.restore();
   process.env.NEXT_PUBLIC_APP_ENV = ORIGINAL_APP_ENV;
   process.env.SPACETIME_DATABASE = ORIGINAL_SPACETIME_DATABASE;
   process.env.SPACETIME_ADMIN_TOKEN = ORIGINAL_SPACETIME_ADMIN_TOKEN;

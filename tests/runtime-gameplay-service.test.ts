@@ -1,5 +1,3 @@
-/// <reference types="bun-types" />
-
 import { describe, expect, test } from 'bun:test';
 import { createRuntimeGameplayService } from '@/lib/server/runtime-gameplay-service';
 import { InvalidOperationError } from '@/lib/server/service-errors';
@@ -98,6 +96,23 @@ describe('runtime gameplay service', () => {
     expect(finished.questionState).toBeNull();
   });
 
+  test('replaces the lobby expiry with the active-game expiry when gameplay starts', () => {
+    const service = createRuntimeGameplayService({
+      clock: () => new Date('2026-03-06T10:00:10.000Z'),
+    });
+
+    const room = createLobbyRoom();
+
+    expect(room.expires_at).toBe('2026-03-07T10:00:00.000Z');
+
+    const started = service.startGame({
+      room,
+      questionSnapshots: [runtimeQuestionSnapshotFixture],
+    });
+
+    expect(started.room.expires_at).toBe('2026-03-06T12:00:10.000Z');
+  });
+
   test('aborts lobby and in-progress rooms with the documented post-abort ttl', () => {
     const service = createRuntimeGameplayService({
       clock: () => new Date('2026-03-06T10:15:00.000Z'),
@@ -113,15 +128,19 @@ describe('runtime gameplay service', () => {
     const abortedInProgress = service.abortGame({ room: runtimeRoomFixture });
 
     expect(abortedInProgress.lifecycle_state).toBe('aborted');
-    expect(abortedInProgress.current_question_index).toBe(0);
+    expect(abortedInProgress.current_question_index).toBeNull();
     expect(abortedInProgress.ended_at).toBe('2026-03-06T10:15:00.000Z');
     expect(abortedInProgress.expires_at).toBe('2026-03-06T10:45:00.000Z');
 
+    const readOnlyService = createRuntimeGameplayService({
+      clock: () => new Date('2026-03-06T10:05:00.000Z'),
+    });
+
     expect(() =>
-      service.abortGame({
+      readOnlyService.abortGame({
         room: {
           ...runtimeRoomFixture,
-          lifecycle_state: 'finished',
+          lifecycle_state: 'finished' as const,
           ended_at: '2026-03-06T10:10:00.000Z',
           expires_at: '2026-03-06T10:40:00.000Z',
         },
@@ -141,6 +160,70 @@ describe('runtime gameplay service', () => {
         roomPlayerId: 'player-2',
         displayName: 'Late Player',
         resumeTokenHash: 'resume-hash-2',
+      }),
+    ).toThrow(InvalidOperationError);
+  });
+
+  test('rotates reconnect tokens for lobby sessions and rejects replayed or expired resume tokens', () => {
+    let currentTime = new Date('2026-03-06T10:00:05.000Z');
+    const service = createRuntimeGameplayService({
+      clock: () => currentTime,
+    });
+
+    const room = createLobbyRoom();
+    const players = [createPlayer({ resume_token_hash: 'hash:resume-current' })];
+
+    currentTime = new Date('2026-03-06T10:15:00.000Z');
+
+    const reconnected = service.reconnectPlayer({
+      room,
+      players,
+      command: {
+        room_id: room.room_id,
+        room_player_id: 'player-1',
+        resume_token: 'resume-current',
+      },
+      generateResumeToken: () => 'resume-next',
+      hashResumeToken: (token) => `hash:${token}`,
+    });
+
+    expect(reconnected.resumeToken).toBe('resume-next');
+    expect(reconnected.resumeExpiresAt).toBe('2026-03-06T22:15:00.000Z');
+    expect(reconnected.updatedPlayers[0]).toMatchObject({
+      room_player_id: 'player-1',
+      resume_token_hash: 'hash:resume-next',
+      resume_version: 2,
+      last_seen_at: '2026-03-06T10:15:00.000Z',
+      status: 'connected',
+    });
+
+    expect(() =>
+      service.reconnectPlayer({
+        room,
+        players: reconnected.updatedPlayers,
+        command: {
+          room_id: room.room_id,
+          room_player_id: 'player-1',
+          resume_token: 'resume-current',
+        },
+        generateResumeToken: () => 'resume-third',
+        hashResumeToken: (token) => `hash:${token}`,
+      }),
+    ).toThrow(InvalidOperationError);
+
+    currentTime = new Date('2026-03-06T22:15:00.001Z');
+
+    expect(() =>
+      service.reconnectPlayer({
+        room,
+        players: reconnected.updatedPlayers,
+        command: {
+          room_id: room.room_id,
+          room_player_id: 'player-1',
+          resume_token: 'resume-next',
+        },
+        generateResumeToken: () => 'resume-expired',
+        hashResumeToken: (token) => `hash:${token}`,
       }),
     ).toThrow(InvalidOperationError);
   });

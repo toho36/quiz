@@ -95,6 +95,10 @@ describe('environment configuration boundary', () => {
       }),
     ).toEqual({
       clerkSecretKey: 'sk_test_123',
+      cloudflareR2AccessKeyId: null,
+      cloudflareR2AccountId: null,
+      cloudflareR2BucketName: 'quiz',
+      cloudflareR2SecretAccessKey: null,
       spacetimeAdminToken: null,
       spacetimeDatabase: 'quiz-1j871',
       runtimeBootstrapSigningKey: 'signing-key',
