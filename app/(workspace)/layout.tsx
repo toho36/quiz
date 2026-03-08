@@ -1,16 +1,15 @@
-import Link from 'next/link';
+import { SectionNav } from '@/components/section-nav';
 import { workspaceRoutes } from '@/lib/shared/routes';
 
 export default function WorkspaceLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap gap-3 border-b border-border pb-4 text-sm text-slate-300">
-        {workspaceRoutes.map((route) => (
-          <Link key={route.href} className="rounded-full border border-border px-3 py-1 hover:text-white" href={route.href}>
-            {route.label}
-          </Link>
-        ))}
-      </div>
+    <div className="space-y-8">
+      <SectionNav
+        badge="Workspace"
+        title="Creative authoring lanes"
+        description="Bounce between dashboard orchestration and the quiz workshop while staying inside the same playful studio shell."
+        routes={workspaceRoutes}
+      />
       {children}
     </div>
   );
