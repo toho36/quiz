@@ -1,5 +1,7 @@
+import { ClerkProvider } from '@clerk/nextjs';
 import Link from 'next/link';
 import './globals.css';
+import { getClerkEnvStatus } from '@/lib/env/clerk';
 import { getPublicRuntimeConfig } from '@/lib/env/public';
 import { getLocaleContext } from '@/lib/i18n/server';
 import { getPrimaryRoutes } from '@/lib/shared/routes';
@@ -7,6 +9,14 @@ import { Geist } from 'next/font/google';
 import { cn } from '@/lib/utils';
 
 const geist = Geist({ subsets: ['latin'], variable: '--font-sans' });
+
+function AppProviders({ children, clerkPublishableKey }: { children: React.ReactNode; clerkPublishableKey: string | null }) {
+  if (!clerkPublishableKey) {
+    return <>{children}</>;
+  }
+
+  return <ClerkProvider publishableKey={clerkPublishableKey}>{children}</ClerkProvider>;
+}
 
 export const metadata = {
   title: 'Quiz',
@@ -17,8 +27,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const config = getPublicRuntimeConfig();
   const { locale, dictionary } = await getLocaleContext();
   const primaryRoutes = getPrimaryRoutes(dictionary.routes);
-
-  return (
+  const clerk = getClerkEnvStatus();
+  const app = (
     <html lang={locale} className={cn('dark', 'font-sans', geist.variable)}>
       <body>
         <div className="min-h-screen bg-canvas">
@@ -54,4 +64,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       </body>
     </html>
   );
+
+  return <AppProviders clerkPublishableKey={clerk.isConfigured ? clerk.publishableKey : null}>{app}</AppProviders>;
 }

@@ -1,7 +1,36 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { getPublicRuntimeConfig } from '@/lib/env/public';
 import type { AuthenticatedAuthor, AuthoringQuizStore } from '@/lib/server/authoring-service';
 import { createAuthoringService } from '@/lib/server/authoring-service';
+import {
+  addOptionToQuizDocument,
+  addQuestionToQuizDocument,
+  deleteOptionFromQuizDocument,
+  deleteQuestionFromQuizDocument,
+  moveOptionInQuizDocument,
+  moveQuestionInQuizDocument,
+  saveQuestionInQuizDocument,
+  type QuestionDirection,
+  type SaveQuestionDocumentInput,
+} from '@/lib/server/demo-app-authoring-helpers';
+import {
+  buildActiveQuestion,
+  buildHostAllowedActions,
+  buildPlayerSubmissionStatus,
+  buildSharedRoom,
+  currentLeaderboard,
+  getCurrentOptionSnapshots,
+  getCurrentQuestionSnapshot,
+  getQuestionSnapshotsForRoom,
+} from '@/lib/server/demo-app-room-state';
+import {
+  createSpacetimeAuthoringStore,
+  type AuthoringSpacetimeClientFactory,
+} from '@/lib/server/authoring-spacetimedb-store';
+import { createRuntimeHostClaimSigner, verifyRuntimeHostClaimToken } from '@/lib/server/host-claim-signer';
+import {
+  createSpacetimeRuntimeBootstrapProvisioner,
+  type RuntimeBootstrapProvisioner,
+} from '@/lib/server/runtime-spacetimedb-bootstrap';
 import { createDemoSeedQuizDocuments } from '@/lib/server/demo-seed';
 import {
   buildQuizImageObjectKey,
@@ -10,7 +39,12 @@ import {
   validateQuizImageFile,
 } from '@/lib/server/quiz-image-assets';
 import { createDefaultQuizImageStore, type QuizImageStore } from '@/lib/server/quiz-image-store';
-import { createRoomBootstrapService } from '@/lib/server/room-bootstrap-service';
+import {
+  isExpectedStructuredLogError,
+  writeStructuredLog,
+  type StructuredLogMetadata,
+} from '@/lib/server/observability';
+import { createRoomBootstrapService, type HostClaimSigner } from '@/lib/server/room-bootstrap-service';
 import { createRuntimeGameplayService, type AcceptedAnswerSubmission } from '@/lib/server/runtime-gameplay-service';
 import { AuthorizationError, InvalidOperationError, NotFoundError } from '@/lib/server/service-errors';
 import {
@@ -20,33 +54,23 @@ import {
   playerJoinCommandSchema,
   playerReconnectCommandSchema,
   playerRoomStateSchema,
-  runtimeQuestionOptionSnapshotSchema,
-  runtimeQuestionSnapshotSchema,
-  runtimeRoomSchema,
   type AuthoringQuizDocument,
   type CreateRoomResponse,
   type HostAllowedAction,
   type HostRoomState,
   type PlayerLatestOutcome,
-  type PlayerRoomState,
   type QuizImageAssetReference,
   type RuntimeQuestionOptionSnapshot,
   type RuntimeQuestionSnapshot,
   type RuntimeQuestionState,
   type RuntimeRoom,
   type RuntimeRoomPlayer,
+  runtimeRoomSchema,
 } from '@/lib/shared/contracts';
 
-export const demoAuthorActor: AuthenticatedAuthor = {
-  clerkUserId: 'user-1',
-  clerkSessionId: 'demo-session-1',
-};
+type AppClock = () => Date;
 
-type DemoClock = () => Date;
-
-const LOBBY_ROOM_TTL_MS = 24 * 60 * 60 * 1000;
-
-type DemoQuizSummary = {
+type AppQuizSummary = {
   quiz_id: string;
   title: string;
   status: AuthoringQuizDocument['quiz']['status'];
@@ -58,13 +82,17 @@ type GuestBinding = {
   roomId: string;
   roomCode: string;
   roomPlayerId: string;
+  resumeToken: string;
   resumeExpiresAt: string;
   resumeVersion: number;
 };
 
 type PlayerSessionBinding = GuestBinding & {
   resumeToken: string;
+  resumeExpiresAt: string;
 };
+
+type SaveQuestionInput = { actor: AuthenticatedAuthor; quizId: string } & SaveQuestionDocumentInput;
 
 type RoomSession = {
   bootstrap: CreateRoomResponse | null;
@@ -76,144 +104,110 @@ type RoomSession = {
   acceptedSubmissions: AcceptedAnswerSubmission[];
   latestOutcomes: Record<string, PlayerLatestOutcome | null>;
   leaderboard: HostRoomState['leaderboard'];
+  activeHostTransportSessionId: string | null;
+  consumedHostClaimJtis: Set<string>;
 };
 
-type DemoState = {
-  quizzes: Map<string, AuthoringQuizDocument>;
+type AppState = {
   roomsByCode: Map<string, RoomSession>;
   guestBindings: Map<string, Map<string, GuestBinding>>;
-  nextRoomNumber: number;
   nextPlayerNumber: number;
   nextClaimNumber: number;
 };
 
-type DemoAppServiceDependencies = {
-  clock?: DemoClock;
-  logger?: DemoLifecycleLogger;
+type AppServiceDependencies = {
+  authoringClientFactory?: AuthoringSpacetimeClientFactory;
+  runtimeProvisioner?: RuntimeBootstrapProvisioner | null;
+  hostClaimSigner?: HostClaimSigner | null;
+  clock?: AppClock;
   quizImageStore?: QuizImageStore;
   saveQuizDocumentOverride?: AuthoringQuizStore['saveQuizDocument'];
+  seedDocuments?: AuthoringQuizDocument[];
 };
 
-type DemoLifecycleLogPayload = {
-  event: 'demo.create_room' | 'demo.player_join' | 'demo.player_reconnect' | 'demo.room_lifecycle';
-  environment: ReturnType<typeof getPublicRuntimeConfig>['environment'];
-  deployment_id: string | null;
-  result: 'success' | 'error';
-  room_id?: string;
-  room_code?: string;
-  source_quiz_id?: string;
-  clerk_user_id?: string;
-  room_player_id?: string;
-  action?: HostAllowedAction;
-  lifecycle_state?: RuntimeRoom['lifecycle_state'];
-  previous_lifecycle_state?: RuntimeRoom['lifecycle_state'];
-  question_phase?: RuntimeQuestionState['phase'] | null;
-  previous_question_phase?: RuntimeQuestionState['phase'] | null;
-  resume_version?: number;
-  error_name?: string;
-  error_message?: string;
-};
-
-type DemoLifecycleLogger = {
-  info(payload: DemoLifecycleLogPayload): void;
-  error(payload: DemoLifecycleLogPayload): void;
-};
-
-const consoleDemoLifecycleLogger: DemoLifecycleLogger = {
-  info(payload) {
-    console.info(payload);
-  },
-  error(payload) {
-    console.error(payload);
-  },
-};
+export type AppService = ReturnType<typeof createDemoAppService>;
 
 function clone<T>(value: T): T {
   return structuredClone(value);
-}
-
-function addMs(value: string, ms: number) {
-  return new Date(Date.parse(value) + ms).toISOString();
-}
-
-function now(clock: DemoClock) {
-  return clock().toISOString();
 }
 
 function normalizeRoomCode(value: string) {
   return value.trim().toUpperCase();
 }
 
-function generateResumeToken() {
-  return randomBytes(32).toString('base64url');
-}
-
-function hashResumeToken(value: string) {
-  return createHash('sha256').update(value).digest('base64url');
-}
-
-function createInitialState(): DemoState {
+function createInitialState(): AppState {
   return {
-    quizzes: new Map(createDemoSeedQuizDocuments().map((document) => [document.quiz.quiz_id, clone(document)])),
     roomsByCode: new Map(),
     guestBindings: new Map(),
-    nextRoomNumber: 1,
     nextPlayerNumber: 1,
     nextClaimNumber: 1,
   };
 }
 
-function buildSessionLogContext(session: RoomSession | null | undefined) {
-  if (!session) {
-    return {};
-  }
-
-  return {
-    room_id: session.room.room_id,
-    room_code: session.room.room_code,
-    lifecycle_state: session.room.lifecycle_state,
-    question_phase: session.questionState?.phase ?? null,
-  };
+function createDemoHostClaimSigner(): HostClaimSigner {
+  return createRuntimeHostClaimSigner();
 }
 
-function serializeErrorForLog(error: unknown) {
-  if (error instanceof Error) {
-    return {
-      error_name: error.name,
-      error_message: error.message,
-    };
-  }
+function hashResumeToken(token: string) {
+  return createHash('sha256').update(token).digest('hex');
+}
 
-  return {
-    error_name: 'UnknownError',
-    error_message: 'Unexpected non-error thrown',
-  };
+function generateResumeToken() {
+  return randomBytes(32).toString('hex');
 }
 
 export function createDemoAppService({
+  authoringClientFactory,
+  runtimeProvisioner = null,
+  hostClaimSigner = createDemoHostClaimSigner(),
   clock = () => new Date(),
-  logger = consoleDemoLifecycleLogger,
   quizImageStore = createDefaultQuizImageStore(),
   saveQuizDocumentOverride,
-}: DemoAppServiceDependencies = {}) {
+  seedDocuments = createDemoSeedQuizDocuments(),
+}: AppServiceDependencies = {}) {
   const state = createInitialState();
   const runtimeGameplayService = createRuntimeGameplayService({ clock });
-  const environment = getPublicRuntimeConfig().environment;
-  const deploymentId = process.env.VERCEL_DEPLOYMENT_ID ?? null;
+  let authoringStore: ReturnType<typeof createSpacetimeAuthoringStore> | null = null;
+  let resolvedRuntimeProvisioner = runtimeProvisioner;
+  let resolvedHostClaimSigner = hostClaimSigner;
 
-  function logInfo(payload: Omit<DemoLifecycleLogPayload, 'deployment_id' | 'environment'>) {
-    logger.info({
-      ...payload,
-      environment,
-      deployment_id: deploymentId,
-    });
+  function getAuthoringStore() {
+    if (!authoringStore) {
+      authoringStore = createSpacetimeAuthoringStore({
+        clientFactory: authoringClientFactory,
+        seedDocuments,
+      });
+    }
+
+    return authoringStore;
   }
 
-  function logError(payload: Omit<DemoLifecycleLogPayload, 'deployment_id' | 'environment'>) {
-    logger.error({
-      ...payload,
-      environment,
-      deployment_id: deploymentId,
+  function getRuntimeProvisioner() {
+    if (!resolvedRuntimeProvisioner) {
+      resolvedRuntimeProvisioner = createSpacetimeRuntimeBootstrapProvisioner();
+    }
+
+    return resolvedRuntimeProvisioner;
+  }
+
+  function getHostClaimSigner() {
+    if (!resolvedHostClaimSigner) {
+      resolvedHostClaimSigner = createRuntimeHostClaimSigner();
+    }
+
+    return resolvedHostClaimSigner;
+  }
+
+  function logRuntimeEvent(event: string, metadata: StructuredLogMetadata) {
+    writeStructuredLog({ event, metadata });
+  }
+
+  function logRuntimeFailure(event: string, error: unknown, metadata: StructuredLogMetadata) {
+    writeStructuredLog({
+      event,
+      error,
+      metadata,
+      level: isExpectedStructuredLogError(error) ? 'warn' : 'error',
     });
   }
 
@@ -221,15 +215,13 @@ export function createDemoAppService({
     clock,
     quizStore: {
       async getQuizDocument(quizId) {
-        return clone(state.quizzes.get(quizId) ?? null);
+        return getAuthoringStore().quizStore.getQuizDocument(quizId);
       },
       async saveQuizDocument(document) {
-        const parsed = authoringQuizDocumentSchema.parse(document);
         if (saveQuizDocumentOverride) {
-          return saveQuizDocumentOverride(parsed);
+          return saveQuizDocumentOverride(document);
         }
-        state.quizzes.set(parsed.quiz.quiz_id, clone(parsed));
-        return clone(parsed);
+        return getAuthoringStore().quizStore.saveQuizDocument(document);
       },
     },
   });
@@ -240,50 +232,39 @@ export function createDemoAppService({
     generateJti: () => `claim-${state.nextClaimNumber++}`,
     hostClaimSigner: {
       async signHostClaim(claims) {
-        return `demo-host-claim:${claims.room_id}:${claims.jti}`;
+        return getHostClaimSigner().signHostClaim(claims);
       },
     },
     roomProvisioner: {
       async createRoom(input) {
-        const roomId = `room-${state.nextRoomNumber}`;
-        const roomCode = `ROOM${String(state.nextRoomNumber).padStart(2, '0')}`;
-        const createdAt = now(clock);
-        const room = runtimeRoomSchema.parse({
-          room_id: roomId,
-          room_code: roomCode,
-          source_quiz_id: input.sourceQuizId,
-          lifecycle_state: 'lobby',
-          current_question_index: null,
-          host_binding: { clerk_user_id: input.ownerUserId, host_binding_version: 1 },
-          created_at: createdAt,
-          started_at: null,
-          ended_at: null,
-          expires_at: addMs(createdAt, LOBBY_ROOM_TTL_MS),
-          room_policy: input.roomPolicy,
-        });
-        state.roomsByCode.set(roomCode, {
+        const bootstrap = await getRuntimeProvisioner().createRoom(input);
+        state.roomsByCode.set(bootstrap.room.room_code, {
           bootstrap: null,
-          room,
-          questionSnapshots: [],
-          optionSnapshots: [],
+          room: bootstrap.room,
+          questionSnapshots: bootstrap.questionSnapshots,
+          optionSnapshots: bootstrap.optionSnapshots,
           questionState: null,
           players: [],
           acceptedSubmissions: [],
           latestOutcomes: {},
           leaderboard: null,
+          activeHostTransportSessionId: null,
+          consumedHostClaimJtis: new Set<string>(),
         });
-        state.nextRoomNumber += 1;
-        return { room_id: roomId, room_code: roomCode };
+        return { room_id: bootstrap.room.room_id, room_code: bootstrap.room.room_code };
       },
     },
   });
 
-  function mustQuizDocument(quizId: string) {
-    const quiz = state.quizzes.get(quizId);
-    if (!quiz) {
-      throw new NotFoundError(`Quiz ${quizId} was not found`);
-    }
-    return quiz;
+  async function saveUpdatedQuizDocument(input: {
+    actor: AuthenticatedAuthor;
+    quizId: string;
+    mutate: (current: AuthoringQuizDocument, now: string) => AuthoringQuizDocument;
+  }) {
+    const current = await authoringService.loadOwnedQuizDocument({ actor: input.actor, quizId: input.quizId });
+    const now = clock().toISOString();
+    const nextDocument = input.mutate(clone(current), now);
+    return authoringService.saveQuizDocument({ actor: input.actor, document: nextDocument });
   }
 
   function mustRoomSession(roomCode: string) {
@@ -332,7 +313,7 @@ export function createDemoAppService({
     return activeQuestion?.display_options.find((option) => option.image?.object_key === objectKey)?.image ?? null;
   }
 
-  function isRoomStillReadable(session: RoomSession, currentTime = Date.parse(now(clock))) {
+  function isRoomStillReadable(session: RoomSession, currentTime = Date.parse(clock().toISOString())) {
     if (session.room.lifecycle_state === 'expired') {
       return false;
     }
@@ -345,7 +326,7 @@ export function createDemoAppService({
     return true;
   }
 
-  function expireRoomIfReadabilityEnded(session: RoomSession, currentTime = Date.parse(now(clock))) {
+  function expireRoomIfReadabilityEnded(session: RoomSession, currentTime = Date.parse(clock().toISOString())) {
     if (session.room.lifecycle_state === 'expired') {
       return true;
     }
@@ -378,7 +359,7 @@ export function createDemoAppService({
   }
 
   function doesReadableRoomStillReferenceObjectKey(quizId: string, objectKey: string) {
-    const currentTime = Date.parse(now(clock));
+    const currentTime = Date.parse(clock().toISOString());
     return [...state.roomsByCode.values()].some((session) => {
       if (session.room.source_quiz_id !== quizId) {
         return false;
@@ -422,7 +403,7 @@ export function createDemoAppService({
   }
 
   async function reclaimDeferredQuizImageObjects() {
-    const currentTime = Date.parse(now(clock));
+    const currentTime = Date.parse(clock().toISOString());
     const documentsByQuizId = new Map<string, AuthoringQuizDocument>();
     const processedObjectKeys = new Set<string>();
 
@@ -433,8 +414,15 @@ export function createDemoAppService({
 
       expireRoomIfReadabilityEnded(session, currentTime);
       const quizId = session.room.source_quiz_id;
-      const document = documentsByQuizId.get(quizId) ?? mustQuizDocument(quizId);
-      documentsByQuizId.set(quizId, document);
+      let document = documentsByQuizId.get(quizId);
+      if (!document) {
+        const stored = await getAuthoringStore().quizStore.getQuizDocument(quizId);
+        if (!stored) {
+          continue;
+        }
+        document = authoringQuizDocumentSchema.parse(stored);
+        documentsByQuizId.set(quizId, document);
+      }
 
       for (const reference of collectRoomSnapshotImageReferences(session)) {
         if (processedObjectKeys.has(reference.object_key)) {
@@ -607,26 +595,40 @@ export function createDemoAppService({
     });
   }
 
-  function mustRoomSessionById(roomId: string) {
-    const session = [...state.roomsByCode.values()].find((candidate) => candidate.room.room_id === roomId);
-    if (!session) {
-      throw new NotFoundError(`Room ${roomId} was not found`);
-    }
-    return session;
-  }
-
-  function requireRoomHost(session: RoomSession, actor: AuthenticatedAuthor) {
+  function requireRoomHostOwner(session: RoomSession, actor: AuthenticatedAuthor) {
     if (session.room.host_binding.clerk_user_id !== actor.clerkUserId) {
       throw new AuthorizationError('Only the room owner can manage this host flow');
     }
   }
 
   function assertRoomStillReadable(session: RoomSession) {
-    const currentTime = Date.parse(now(clock));
+    const currentTime = Date.parse(clock().toISOString());
     if (!isRoomStillReadable(session, currentTime)) {
       expireRoomIfReadabilityEnded(session, currentTime);
       throw new InvalidOperationError('Expired rooms are no longer readable');
     }
+  }
+
+  function requireActiveHostBinding(session: RoomSession, transportSessionId: string) {
+    if (!session.activeHostTransportSessionId) {
+      throw new AuthorizationError('Claim host authority before managing this room');
+    }
+    if (session.activeHostTransportSessionId !== transportSessionId) {
+      throw new AuthorizationError('This host session is no longer active for the room');
+    }
+  }
+
+  function requireRoomHost(session: RoomSession, actor: AuthenticatedAuthor, transportSessionId: string) {
+    requireRoomHostOwner(session, actor);
+    requireActiveHostBinding(session, transportSessionId);
+  }
+
+  function requireTransportSessionId(transportSessionId: string) {
+    const normalized = transportSessionId.trim();
+    if (!normalized) {
+      throw new AuthorizationError('A transport session is required to bind host authority');
+    }
+    return normalized;
   }
 
   function setGuestBinding(guestSessionId: string, binding: GuestBinding) {
@@ -635,37 +637,56 @@ export function createDemoAppService({
     state.guestBindings.set(guestSessionId, current);
   }
 
+  function deleteGuestBinding(guestSessionId: string, roomCode: string) {
+    const current = state.guestBindings.get(guestSessionId);
+    if (!current) {
+      return;
+    }
+    current.delete(normalizeRoomCode(roomCode));
+    if (current.size === 0) {
+      state.guestBindings.delete(guestSessionId);
+    }
+  }
+
   function getGuestBinding(guestSessionId: string, roomCode: string) {
     return state.guestBindings.get(guestSessionId)?.get(normalizeRoomCode(roomCode)) ?? null;
   }
 
-  function getQuestionSnapshotsForRoom(session: RoomSession) {
-    return [...session.questionSnapshots].sort((left, right) => left.question_index - right.question_index);
+  function clearReplacedGuestBindings(roomCode: string, roomPlayerId: string, exceptGuestSessionId: string) {
+    const normalizedRoomCode = normalizeRoomCode(roomCode);
+    for (const [guestSessionId, bindings] of state.guestBindings) {
+      if (guestSessionId === exceptGuestSessionId) {
+        continue;
+      }
+      const binding = bindings.get(normalizedRoomCode);
+      if (!binding || binding.roomPlayerId !== roomPlayerId) {
+        continue;
+      }
+      bindings.delete(normalizedRoomCode);
+      if (bindings.size === 0) {
+        state.guestBindings.delete(guestSessionId);
+      }
+    }
   }
 
-  function getCurrentQuestionSnapshot(session: RoomSession) {
-    const index = session.room.current_question_index;
-    if (index === null) {
+  function resolvePlayerForBinding(session: RoomSession, binding: GuestBinding) {
+    const player = session.players.find((entry) => entry.room_player_id === binding.roomPlayerId);
+    if (!player) {
       return null;
     }
-    return session.questionSnapshots.find((question) => question.question_index === index) ?? null;
+    return hashResumeToken(binding.resumeToken) === player.resume_token_hash ? player : null;
   }
 
-  function getCurrentOptionSnapshots(session: RoomSession) {
-    const current = getCurrentQuestionSnapshot(session);
-    if (!current) {
-      return [];
-    }
-    return session.optionSnapshots
-      .filter((option) => option.question_index === current.question_index)
-      .sort((left, right) => left.display_position - right.display_position);
+  function currentEpochSeconds() {
+    return Math.floor(clock().getTime() / 1000);
   }
 
-  function createGuestBinding(session: RoomSession, player: RuntimeRoomPlayer): GuestBinding {
+  function createGuestBinding(session: RoomSession, player: RuntimeRoomPlayer, resumeToken: string): GuestBinding {
     return {
       roomId: session.room.room_id,
       roomCode: session.room.room_code,
       roomPlayerId: player.room_player_id,
+      resumeToken,
       resumeExpiresAt: player.resume_expires_at,
       resumeVersion: player.resume_version,
     };
@@ -678,101 +699,49 @@ export function createDemoAppService({
     };
   }
 
-  function buildSharedRoom(session: RoomSession) {
-    return {
-      room_id: session.room.room_id,
-      room_code: session.room.room_code,
-      lifecycle_state: session.room.lifecycle_state,
-      question_index: session.room.current_question_index,
-      question_phase: session.questionState?.phase ?? null,
-      question_deadline_at: session.questionState?.deadline_at ?? null,
-      room_policy: session.room.room_policy,
-    };
-  }
+  function syncRoomLifecycle(session: RoomSession) {
+    const currentTime = clock().toISOString();
 
-  function buildActiveQuestion(session: RoomSession): PlayerRoomState['active_question'] {
-    const question = getCurrentQuestionSnapshot(session);
-    if (!question || session.room.lifecycle_state !== 'in_progress') {
-      return null;
-    }
-    return {
-      question_index: question.question_index,
-      prompt: question.prompt,
-      image: question.image,
-      question_type: question.question_type,
-      display_options: getCurrentOptionSnapshots(session).map((option) => ({
-        option_id: option.source_option_id,
-        display_position: option.display_position,
-        text: option.text,
-        image: option.image,
-      })),
-    };
-  }
+    while (true) {
+      if (session.room.lifecycle_state === 'in_progress' && Date.parse(currentTime) > Date.parse(session.room.expires_at)) {
+        session.room = runtimeGameplayService.abortGame({ room: session.room, endedAt: session.room.expires_at });
+        session.questionState = null;
+        session.acceptedSubmissions = [];
+        session.leaderboard = null;
+        continue;
+      }
 
-  function buildPlayerSubmissionStatus(session: RoomSession, roomPlayerId: string): PlayerRoomState['self']['submission_status'] {
-    const currentQuestionIndex = session.room.current_question_index;
-    if (currentQuestionIndex === null) {
-      return session.latestOutcomes[roomPlayerId] ? 'accepted' : 'not_submitted';
-    }
-    const hasAcceptedSubmission = session.acceptedSubmissions.some(
-      (submission) => submission.room_player_id === roomPlayerId && submission.question_index === currentQuestionIndex,
-    );
-    if (hasAcceptedSubmission) {
-      return session.questionState?.phase === 'question_open' ? 'submitted' : 'accepted';
-    }
-    return session.questionState?.phase === 'question_open' ? 'not_submitted' : 'no_answer';
-  }
+      if (
+        session.room.lifecycle_state !== 'in_progress' &&
+        session.room.lifecycle_state !== 'expired' &&
+        Date.parse(currentTime) > Date.parse(session.room.expires_at)
+      ) {
+        session.room = {
+          ...session.room,
+          lifecycle_state: 'expired',
+        };
+        session.questionState = null;
+        session.acceptedSubmissions = [];
+        session.latestOutcomes = {};
+        session.leaderboard = null;
+      }
 
-  function currentLeaderboard(session: RoomSession) {
-    if (session.room.lifecycle_state === 'finished' || session.questionState?.phase === 'leaderboard') {
-      return session.leaderboard;
+      return;
     }
-    return null;
-  }
-
-  function buildHostAllowedActions(session: RoomSession): HostAllowedAction[] {
-    if (session.room.lifecycle_state === 'lobby') {
-      return ['start_game', 'abort_game'];
-    }
-    if (session.room.lifecycle_state !== 'in_progress' || !session.questionState) {
-      return [];
-    }
-    switch (session.questionState.phase) {
-      case 'question_open':
-        return ['close_question', 'abort_game'];
-      case 'question_closed':
-        return ['reveal', 'abort_game'];
-      case 'reveal':
-        return ['show_leaderboard', 'abort_game'];
-      case 'leaderboard':
-        return hasNextQuestion(session) ? ['next_question', 'abort_game'] : ['finish_game', 'abort_game'];
-    }
-  }
-
-  function hasNextQuestion(session: RoomSession) {
-    if (session.room.current_question_index === null) {
-      return false;
-    }
-    return session.questionSnapshots.some((question) => question.question_index === session.room.current_question_index! + 1);
   }
 
   return {
-    listQuizSummaries(actor: AuthenticatedAuthor): DemoQuizSummary[] {
-      return [...state.quizzes.values()]
-        .filter((document) => document.quiz.owner_user_id === actor.clerkUserId)
-        .sort((left, right) => left.quiz.updated_at.localeCompare(right.quiz.updated_at) * -1)
-        .map((document) => ({
-          quiz_id: document.quiz.quiz_id,
-          title: document.quiz.title,
-          status: document.quiz.status,
-          question_count: document.questions.length,
-          updated_at: document.quiz.updated_at,
-        }));
+    async listQuizSummaries(actor: AuthenticatedAuthor): Promise<AppQuizSummary[]> {
+      return getAuthoringStore().listQuizSummaries(actor);
     },
 
     listActiveRooms(actor: AuthenticatedAuthor) {
       return [...state.roomsByCode.values()]
         .filter((session) => session.room.host_binding.clerk_user_id === actor.clerkUserId)
+        .map((session) => {
+          syncRoomLifecycle(session);
+          return session;
+        })
         .map((session) => ({
           room_code: session.room.room_code,
           source_quiz_id: session.room.source_quiz_id,
@@ -800,8 +769,67 @@ export function createDemoAppService({
       });
     },
 
-    async saveQuizDocument(input: { actor: AuthenticatedAuthor; document: AuthoringQuizDocument }) {
-      return authoringService.saveQuizDocument(input);
+    async addQuestion({ actor, quizId }: { actor: AuthenticatedAuthor; quizId: string }) {
+      return saveUpdatedQuizDocument({
+        actor,
+        quizId,
+        mutate: (current, now) => addQuestionToQuizDocument(current, now),
+      });
+    },
+
+    async saveQuestion(input: SaveQuestionInput) {
+      return saveUpdatedQuizDocument({
+        actor: input.actor,
+        quizId: input.quizId,
+        mutate: (current, now) => saveQuestionInQuizDocument(current, now, input),
+      });
+    },
+
+    async moveQuestion(input: { actor: AuthenticatedAuthor; quizId: string; questionId: string; direction: QuestionDirection }) {
+      return saveUpdatedQuizDocument({
+        actor: input.actor,
+        quizId: input.quizId,
+        mutate: (current, now) => moveQuestionInQuizDocument(current, now, input.questionId, input.direction),
+      });
+    },
+
+    async deleteQuestion(input: { actor: AuthenticatedAuthor; quizId: string; questionId: string }) {
+      return saveUpdatedQuizDocument({
+        actor: input.actor,
+        quizId: input.quizId,
+        mutate: (current, now) => deleteQuestionFromQuizDocument(current, now, input.questionId),
+      });
+    },
+
+    async addOption(input: { actor: AuthenticatedAuthor; quizId: string; questionId: string }) {
+      return saveUpdatedQuizDocument({
+        actor: input.actor,
+        quizId: input.quizId,
+        mutate: (current, now) => addOptionToQuizDocument(current, now, input.questionId),
+      });
+    },
+
+    async moveOption(input: {
+      actor: AuthenticatedAuthor;
+      quizId: string;
+      questionId: string;
+      optionId: string;
+      direction: QuestionDirection;
+    }) {
+      return saveUpdatedQuizDocument({
+        actor: input.actor,
+        quizId: input.quizId,
+        mutate: (current, now) =>
+          moveOptionInQuizDocument(current, now, input.questionId, input.optionId, input.direction),
+      });
+    },
+
+    async deleteOption(input: { actor: AuthenticatedAuthor; quizId: string; questionId: string; optionId: string }) {
+      return saveUpdatedQuizDocument({
+        actor: input.actor,
+        quizId: input.quizId,
+        mutate: (current, now) => deleteOptionFromQuizDocument(current, now, input.questionId, input.optionId),
+      });
     },
 
     async uploadQuestionImage(input: { actor: AuthenticatedAuthor; quizId: string; questionId: string; file: File }) {
@@ -885,7 +913,7 @@ export function createDemoAppService({
 
     async readHostRuntimeQuizImageAsset(input: { actor: AuthenticatedAuthor; roomCode: string; objectKey: string }) {
       const session = mustRoomSession(input.roomCode);
-      requireRoomHost(session, input.actor);
+      requireRoomHostOwner(session, input.actor);
       assertRoomStillReadable(session);
       const reference = findActiveQuestionImageReference(session, input.objectKey);
       if (!reference) {
@@ -900,8 +928,9 @@ export function createDemoAppService({
         throw new AuthorizationError('Join the room before loading runtime quiz images');
       }
       const session = mustRoomSession(binding.roomCode);
+      syncRoomLifecycle(session);
       assertRoomStillReadable(session);
-      const player = session.players.find((entry) => entry.room_player_id === binding.roomPlayerId);
+      const player = resolvePlayerForBinding(session, binding);
       if (!player || binding.resumeVersion !== player.resume_version) {
         throw new AuthorizationError('Player session is no longer authorized for this room');
       }
@@ -919,35 +948,85 @@ export function createDemoAppService({
     async createRoom({ actor, quizId }: { actor: AuthenticatedAuthor; quizId: string }) {
       try {
         const bootstrap = await roomBootstrapService.createRoom({ actor, quizId });
-        const session = mustRoomSession(bootstrap.room_code);
-        session.bootstrap = bootstrap;
-        logInfo({
-          event: 'demo.create_room',
-          result: 'success',
-          clerk_user_id: actor.clerkUserId,
-          source_quiz_id: bootstrap.source_quiz_id,
-          ...buildSessionLogContext(session),
+        mustRoomSession(bootstrap.room_code).bootstrap = bootstrap;
+        logRuntimeEvent('runtime.create_room', {
+          roomId: bootstrap.room_id,
+          roomCode: bootstrap.room_code,
+          sourceQuizId: bootstrap.source_quiz_id,
+          clerkUserId: actor.clerkUserId,
         });
         return bootstrap;
       } catch (error) {
-        logError({
-          event: 'demo.create_room',
-          result: 'error',
-          clerk_user_id: actor.clerkUserId,
-          source_quiz_id: quizId,
-          ...serializeErrorForLog(error),
+        logRuntimeFailure('runtime.create_room.failed', error, {
+          quizId,
+          clerkUserId: actor.clerkUserId,
         });
         throw error;
       }
     },
 
-    findHostRoomDetails({ actor, roomCode }: { actor: AuthenticatedAuthor; roomCode: string }) {
+    claimHost(input: {
+      actor: AuthenticatedAuthor;
+      roomCode: string;
+      hostClaimToken: string;
+      transportSessionId: string;
+    }) {
+      const normalizedRoomCode = normalizeRoomCode(input.roomCode);
+      let session: RoomSession | null = null;
+
+      try {
+        session = mustRoomSession(normalizedRoomCode);
+        const transportSessionId = requireTransportSessionId(input.transportSessionId);
+        requireRoomHostOwner(session, input.actor);
+
+        const claims = verifyRuntimeHostClaimToken(input.hostClaimToken);
+        if (claims.exp <= currentEpochSeconds()) {
+          throw new AuthorizationError('Host claim token has expired');
+        }
+        if (claims.room_id !== session.room.room_id) {
+          throw new AuthorizationError('Host claim token does not match this room');
+        }
+        if (claims.clerk_user_id !== input.actor.clerkUserId || claims.clerk_session_id !== input.actor.clerkSessionId) {
+          throw new AuthorizationError('Host claim token does not match the current signed-in author session');
+        }
+        if (session.consumedHostClaimJtis.has(claims.jti)) {
+          throw new AuthorizationError('Host claim token has already been consumed');
+        }
+
+        session.consumedHostClaimJtis.add(claims.jti);
+        if (session.activeHostTransportSessionId && session.activeHostTransportSessionId !== transportSessionId) {
+          session.room = {
+            ...session.room,
+            host_binding: {
+              ...session.room.host_binding,
+              host_binding_version: session.room.host_binding.host_binding_version + 1,
+            },
+          };
+        }
+        session.activeHostTransportSessionId = transportSessionId;
+
+        return this.getHostRoomState({
+          actor: input.actor,
+          roomCode: normalizedRoomCode,
+          transportSessionId,
+        });
+      } catch (error) {
+        logRuntimeFailure('runtime.host_claim.validation_failed', error, {
+          roomId: session?.room.room_id ?? null,
+          roomCode: normalizedRoomCode,
+          clerkUserId: input.actor.clerkUserId,
+        });
+        throw error;
+      }
+    },
+
+    findHostRoomDetails({ actor, roomCode, transportSessionId }: { actor: AuthenticatedAuthor; roomCode: string; transportSessionId: string }) {
       const session = state.roomsByCode.get(normalizeRoomCode(roomCode));
       if (!session) {
         return null;
       }
-      requireRoomHost(session, actor);
-      assertRoomStillReadable(session);
+      syncRoomLifecycle(session);
+      requireRoomHost(session, actor, requireTransportSessionId(transportSessionId));
       return {
         bootstrap: session.bootstrap,
         state: hostRoomStateSchema.parse({
@@ -967,34 +1046,36 @@ export function createDemoAppService({
       };
     },
 
-    getHostRoomState({ actor, roomCode }: { actor: AuthenticatedAuthor; roomCode: string }) {
-      const details = this.findHostRoomDetails({ actor, roomCode });
+    getHostRoomState({ actor, roomCode, transportSessionId }: { actor: AuthenticatedAuthor; roomCode: string; transportSessionId: string }) {
+      const details = this.findHostRoomDetails({ actor, roomCode, transportSessionId });
       if (!details) {
         throw new NotFoundError(`Room ${roomCode} was not found`);
       }
       return details.state;
     },
 
-    performHostAction(input: { actor: AuthenticatedAuthor; roomCode: string; action: HostAllowedAction }) {
+    performHostAction(input: {
+      actor: AuthenticatedAuthor;
+      roomCode: string;
+      action: HostAllowedAction;
+      transportSessionId: string;
+    }) {
+      const normalizedRoomCode = normalizeRoomCode(input.roomCode);
       let session: RoomSession | null = null;
-      let previousLifecycleState: RuntimeRoom['lifecycle_state'] | undefined;
-      let previousQuestionPhase: RuntimeQuestionState['phase'] | null | undefined;
+      let previousLifecycleState: RuntimeRoom['lifecycle_state'] | null = null;
+      let previousQuestionPhase: RuntimeQuestionState['phase'] | null = null;
 
       try {
-        session = mustRoomSession(input.roomCode);
-        requireRoomHost(session, input.actor);
+        session = mustRoomSession(normalizedRoomCode);
+        requireRoomHost(session, input.actor, requireTransportSessionId(input.transportSessionId));
+        syncRoomLifecycle(session);
         previousLifecycleState = session.room.lifecycle_state;
         previousQuestionPhase = session.questionState?.phase ?? null;
 
         switch (input.action) {
           case 'start_game': {
-            const quiz = mustQuizDocument(session.room.source_quiz_id);
-            const questionSnapshots = buildQuestionSnapshots(session.room.room_id, quiz);
-            const optionSnapshots = buildOptionSnapshots(session.room.room_id, quiz);
-            const started = runtimeGameplayService.startGame({ room: session.room, questionSnapshots });
+            const started = runtimeGameplayService.startGame({ room: session.room, questionSnapshots: getQuestionSnapshotsForRoom(session) });
             session.room = started.room;
-            session.questionSnapshots = questionSnapshots;
-            session.optionSnapshots = optionSnapshots;
             session.questionState = started.questionState;
             session.acceptedSubmissions = [];
             session.latestOutcomes = {};
@@ -1059,36 +1140,40 @@ export function createDemoAppService({
             }
             break;
           }
-          case 'abort_game': {
+          case 'abort_game':
             session.room = runtimeGameplayService.abortGame({ room: session.room });
             session.questionState = null;
             session.acceptedSubmissions = [];
             session.leaderboard = null;
             break;
-          }
         }
 
-        logInfo({
-          event: 'demo.room_lifecycle',
-          result: 'success',
-          action: input.action,
-          clerk_user_id: input.actor.clerkUserId,
-          previous_lifecycle_state: previousLifecycleState,
-          previous_question_phase: previousQuestionPhase,
-          ...buildSessionLogContext(session),
+        const nextState = this.getHostRoomState({
+          actor: input.actor,
+          roomCode: normalizedRoomCode,
+          transportSessionId: input.transportSessionId,
         });
-        return this.getHostRoomState({ actor: input.actor, roomCode: input.roomCode });
-      } catch (error) {
-        logError({
-          event: 'demo.room_lifecycle',
-          result: 'error',
+
+        logRuntimeEvent('runtime.lifecycle_transition', {
+          roomId: session.room.room_id,
+          roomCode: normalizedRoomCode,
+          clerkUserId: input.actor.clerkUserId,
           action: input.action,
-          clerk_user_id: input.actor.clerkUserId,
-          room_code: normalizeRoomCode(input.roomCode),
-          previous_lifecycle_state: previousLifecycleState,
-          previous_question_phase: previousQuestionPhase,
-          ...buildSessionLogContext(session),
-          ...serializeErrorForLog(error),
+          previousLifecycleState,
+          previousQuestionPhase,
+          resultingLifecycleState: nextState.shared_room.lifecycle_state,
+          resultingQuestionPhase: nextState.shared_room.question_phase,
+        });
+
+        return nextState;
+      } catch (error) {
+        logRuntimeFailure('runtime.lifecycle_transition.failed', error, {
+          roomId: session?.room.room_id ?? null,
+          roomCode: normalizedRoomCode,
+          clerkUserId: input.actor.clerkUserId,
+          action: input.action,
+          previousLifecycleState,
+          previousQuestionPhase,
         });
         throw error;
       }
@@ -1096,15 +1181,18 @@ export function createDemoAppService({
 
     joinRoom(input: { guestSessionId: string; roomCode: string; displayName: string }): PlayerSessionBinding {
       let session: RoomSession | null = null;
+      let normalizedRoomCode = normalizeRoomCode(input.roomCode);
 
       try {
         const command = playerJoinCommandSchema.parse({ room_code: input.roomCode, display_name: input.displayName });
-        const normalizedRoomCode = normalizeRoomCode(command.room_code);
+        normalizedRoomCode = normalizeRoomCode(command.room_code);
         const existingBinding = getGuestBinding(input.guestSessionId, normalizedRoomCode);
         if (existingBinding) {
           throw new InvalidOperationError('Room already joined in this guest session');
         }
+
         session = mustRoomSession(normalizedRoomCode);
+        syncRoomLifecycle(session);
         const roomPlayerId = `player-${state.nextPlayerNumber}`;
         const resumeToken = generateResumeToken();
         const joinedPlayer = runtimeGameplayService.joinPlayer({
@@ -1116,75 +1204,61 @@ export function createDemoAppService({
         });
         session.players = [...session.players, joinedPlayer];
         state.nextPlayerNumber += 1;
-        const binding = createGuestBinding(session, joinedPlayer);
+
+        const binding = createGuestBinding(session, joinedPlayer, resumeToken);
         setGuestBinding(input.guestSessionId, binding);
-        logInfo({
-          event: 'demo.player_join',
-          result: 'success',
-          room_player_id: binding.roomPlayerId,
-          resume_version: binding.resumeVersion,
-          ...buildSessionLogContext(session),
+        logRuntimeEvent('runtime.player_join', {
+          roomId: session.room.room_id,
+          roomCode: normalizedRoomCode,
+          roomPlayerId,
+          lifecycleState: session.room.lifecycle_state,
+          bindingReused: false,
         });
         return createPlayerSessionBinding(binding, resumeToken);
       } catch (error) {
-        logError({
-          event: 'demo.player_join',
-          result: 'error',
-          room_code: normalizeRoomCode(input.roomCode),
-          ...buildSessionLogContext(session),
-          ...serializeErrorForLog(error),
+        logRuntimeFailure('runtime.player_join.failed', error, {
+          roomId: session?.room.room_id ?? null,
+          roomCode: normalizedRoomCode,
         });
         throw error;
       }
     },
 
-    reconnectPlayer(input: { guestSessionId: string; roomId: string; roomPlayerId: string; resumeToken: string }): PlayerSessionBinding {
+    reconnectPlayer(input: { guestSessionId: string; roomCode: string; roomId: string; roomPlayerId: string; resumeToken: string }): PlayerSessionBinding {
+      const normalizedRoomCode = normalizeRoomCode(input.roomCode);
       let session: RoomSession | null = null;
-      let existingPlayer: RuntimeRoomPlayer | null = null;
 
       try {
-        const command = playerReconnectCommandSchema.parse({
-          room_id: input.roomId,
-          room_player_id: input.roomPlayerId,
-          resume_token: input.resumeToken,
-        });
-        session = mustRoomSessionById(command.room_id);
-        assertRoomStillReadable(session);
-        const playerIndex = session.players.findIndex((entry) => entry.room_player_id === command.room_player_id);
-        if (playerIndex === -1) {
-          throw new NotFoundError(`Player ${command.room_player_id} was not found in room ${command.room_id}`);
-        }
-
-        existingPlayer = session.players[playerIndex];
-        const nextResumeToken = generateResumeToken();
-        const updatedPlayer = runtimeGameplayService.reconnectPlayer({
+        session = mustRoomSession(normalizedRoomCode);
+        syncRoomLifecycle(session);
+        const reconnected = runtimeGameplayService.reconnectPlayer({
           room: session.room,
-          player: existingPlayer,
-          command,
-          presentedResumeTokenHash: hashResumeToken(command.resume_token),
-          nextResumeTokenHash: hashResumeToken(nextResumeToken),
+          players: session.players,
+          command: playerReconnectCommandSchema.parse({
+            room_id: input.roomId,
+            room_player_id: input.roomPlayerId,
+            resume_token: input.resumeToken,
+          }),
+          generateResumeToken,
+          hashResumeToken,
         });
-
-        session.players = session.players.map((player, index) => (index === playerIndex ? updatedPlayer : player));
-        const binding = createGuestBinding(session, updatedPlayer);
+        session.players = reconnected.updatedPlayers;
+        clearReplacedGuestBindings(normalizedRoomCode, input.roomPlayerId, input.guestSessionId);
+        const binding = createGuestBinding(session, reconnected.player, reconnected.resumeToken);
         setGuestBinding(input.guestSessionId, binding);
-        logInfo({
-          event: 'demo.player_reconnect',
-          result: 'success',
-          room_player_id: binding.roomPlayerId,
-          resume_version: binding.resumeVersion,
-          ...buildSessionLogContext(session),
+        logRuntimeEvent('runtime.player_reconnect', {
+          roomId: session.room.room_id,
+          roomCode: normalizedRoomCode,
+          roomPlayerId: input.roomPlayerId,
+          lifecycleState: session.room.lifecycle_state,
+          questionPhase: session.questionState?.phase ?? null,
         });
-        return createPlayerSessionBinding(binding, nextResumeToken);
+        return createPlayerSessionBinding(binding, reconnected.resumeToken);
       } catch (error) {
-        logError({
-          event: 'demo.player_reconnect',
-          result: 'error',
-          room_id: input.roomId,
-          room_player_id: input.roomPlayerId,
-          resume_version: existingPlayer?.resume_version,
-          ...buildSessionLogContext(session),
-          ...serializeErrorForLog(error),
+        logRuntimeFailure('runtime.player_reconnect.failed', error, {
+          roomId: session?.room.room_id ?? input.roomId,
+          roomCode: normalizedRoomCode,
+          roomPlayerId: input.roomPlayerId,
         });
         throw error;
       }
@@ -1196,8 +1270,8 @@ export function createDemoAppService({
         return null;
       }
       const session = mustRoomSession(binding.roomCode);
-      assertRoomStillReadable(session);
-      const player = session.players.find((entry) => entry.room_player_id === binding.roomPlayerId);
+      syncRoomLifecycle(session);
+      const player = resolvePlayerForBinding(session, binding);
       if (!player) {
         return null;
       }
@@ -1233,12 +1307,9 @@ export function createDemoAppService({
         throw new AuthorizationError('Join the room before submitting answers');
       }
       const session = mustRoomSession(binding.roomCode);
-      assertRoomStillReadable(session);
-      const player = session.players.find((entry) => entry.room_player_id === binding.roomPlayerId);
-      if (!player) {
-        throw new AuthorizationError('Join the room before submitting answers');
-      }
-      if (binding.resumeVersion !== player.resume_version) {
+      syncRoomLifecycle(session);
+      const player = resolvePlayerForBinding(session, binding);
+      if (!player || binding.resumeVersion !== player.resume_version) {
         throw new AuthorizationError('Player session has been replaced by a newer reconnect');
       }
       const question = getCurrentQuestionSnapshot(session);
@@ -1264,54 +1335,33 @@ export function createDemoAppService({
   };
 }
 
-function buildQuestionSnapshots(roomId: string, document: AuthoringQuizDocument) {
-  return document.questions
-    .slice()
-    .sort((left, right) => left.question.position - right.question.position)
-    .map((entry, index) =>
-      runtimeQuestionSnapshotSchema.parse({
-        room_id: roomId,
-        question_index: index,
-        source_question_id: entry.question.question_id,
-        prompt: entry.question.prompt,
-        image: entry.question.image,
-        question_type: entry.question.question_type,
-        evaluation_policy: entry.question.evaluation_policy,
-        base_points: entry.question.base_points,
-        effective_time_limit_seconds: entry.question.time_limit_seconds,
-        shuffle_answers: entry.question.shuffle_answers,
-      }),
-    );
+function shouldSeedLocalFixtureDocumentsByDefault(source: NodeJS.ProcessEnv = process.env) {
+  return source.NEXT_PUBLIC_APP_ENV?.trim() === 'local';
 }
 
-function buildOptionSnapshots(roomId: string, document: AuthoringQuizDocument) {
-  return document.questions
-    .slice()
-    .sort((left, right) => left.question.position - right.question.position)
-    .flatMap((entry, questionIndex) => {
-      const orderedOptions = entry.options.slice().sort((left, right) => left.position - right.position);
-      const displayPositions = entry.question.shuffle_answers
-        ? orderedOptions.map((_, index, all) => all.length - index)
-        : orderedOptions.map((_, index) => index + 1);
-      return orderedOptions.map((option, optionIndex) =>
-        runtimeQuestionOptionSnapshotSchema.parse({
-          room_id: roomId,
-          question_index: questionIndex,
-          source_option_id: option.option_id,
-          author_position: option.position,
-          display_position: displayPositions[optionIndex],
-          text: option.text,
-          image: option.image,
-          is_correct: option.is_correct,
-        }),
-      );
-    });
+export function createAppService(dependencies: Omit<AppServiceDependencies, 'seedDocuments'> & { seedDocuments?: AuthoringQuizDocument[] } = {}) {
+  return createDemoAppService({
+    ...dependencies,
+    hostClaimSigner: dependencies.hostClaimSigner ?? null,
+    seedDocuments:
+      dependencies.seedDocuments ?? (shouldSeedLocalFixtureDocumentsByDefault() ? createDemoSeedQuizDocuments() : []),
+  });
+}
+
+const globalAppKey = '__quizAppService';
+
+export function getAppService() {
+  const globalScope = globalThis as typeof globalThis & { [globalAppKey]?: AppService };
+  if (!globalScope[globalAppKey]) {
+    globalScope[globalAppKey] = createAppService();
+  }
+  return globalScope[globalAppKey]!;
 }
 
 const globalDemoAppKey = '__quizDemoAppService';
 
 export function getDemoAppService() {
-  const globalScope = globalThis as typeof globalThis & { [globalDemoAppKey]?: ReturnType<typeof createDemoAppService> };
+  const globalScope = globalThis as typeof globalThis & { [globalDemoAppKey]?: AppService };
   if (!globalScope[globalDemoAppKey]) {
     globalScope[globalDemoAppKey] = createDemoAppService();
   }

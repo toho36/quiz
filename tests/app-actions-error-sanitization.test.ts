@@ -74,18 +74,26 @@ describe('server action client-facing errors', () => {
   test('createRoomAction redirects with a sanitized Czech fallback when no locale cookie is present', async () => {
     mockLocaleCookie();
     mockRedirects();
-    mock.module('@/lib/server/demo-session', () => ({
-      ensureDemoGuestSessionId: async () => 'guest-1',
-      getDemoAuthorActor: async () => ({ clerkUserId: 'user-1', clerkSessionId: 'session-1' }),
-      getDemoGuestSessionId: async () => 'guest-1',
-      signInDemoAuthor: async () => {},
-      signOutDemoAuthor: async () => {},
+    mock.module('@/lib/server/author-auth', () => ({
+      requireProtectedAuthorActor: async () => ({ clerkUserId: 'user-1', clerkSessionId: 'session-1' }),
     }));
-    mock.module('@/lib/server/demo-app-service', () => ({
-      getDemoAppService: () => ({
+    mock.module('@/lib/server/demo-session', () => ({
+      ensureDemoHostSessionId: async () => 'host-1',
+      ensureDemoGuestSessionId: async () => 'guest-1',
+      getDemoPlayerBinding: async () => null,
+      setDemoPlayerBinding: async () => {},
+      clearDemoPlayerBinding: async () => {},
+    }));
+    mock.module('@/lib/server/app-service', () => ({
+      getAppOperationalReadiness: () => ({
+        authoring: { isConfigured: true, missingKeys: [] },
+        runtime: { canCreateRooms: true, canIssueHostClaims: true, missing: [] },
+      }),
+      getAppService: () => ({
         createRoom: async () => {
           throw new Error('Cloudflare R2 createRoom failed (500) for quiz-images/quiz-1/secret.png.');
         },
+        claimHost: () => {},
       }),
     }));
 
@@ -104,18 +112,26 @@ describe('server action client-facing errors', () => {
   test('createRoomAction redirects with an English fallback when the locale cookie requests en', async () => {
     mockLocaleCookie('en');
     mockRedirects();
-    mock.module('@/lib/server/demo-session', () => ({
-      ensureDemoGuestSessionId: async () => 'guest-1',
-      getDemoAuthorActor: async () => ({ clerkUserId: 'user-1', clerkSessionId: 'session-1' }),
-      getDemoGuestSessionId: async () => 'guest-1',
-      signInDemoAuthor: async () => {},
-      signOutDemoAuthor: async () => {},
+    mock.module('@/lib/server/author-auth', () => ({
+      requireProtectedAuthorActor: async () => ({ clerkUserId: 'user-1', clerkSessionId: 'session-1' }),
     }));
-    mock.module('@/lib/server/demo-app-service', () => ({
-      getDemoAppService: () => ({
+    mock.module('@/lib/server/demo-session', () => ({
+      ensureDemoHostSessionId: async () => 'host-1',
+      ensureDemoGuestSessionId: async () => 'guest-1',
+      getDemoPlayerBinding: async () => null,
+      setDemoPlayerBinding: async () => {},
+      clearDemoPlayerBinding: async () => {},
+    }));
+    mock.module('@/lib/server/app-service', () => ({
+      getAppOperationalReadiness: () => ({
+        authoring: { isConfigured: true, missingKeys: [] },
+        runtime: { canCreateRooms: true, canIssueHostClaims: true, missing: [] },
+      }),
+      getAppService: () => ({
         createRoom: async () => {
           throw new Error('Cloudflare R2 createRoom failed (500) for quiz-images/quiz-1/secret.png.');
         },
+        claimHost: () => {},
       }),
     }));
 

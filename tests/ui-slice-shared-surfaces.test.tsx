@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test';
-import { isValidElement, type ReactNode } from 'react';
+import { isValidElement, type ReactElement, type ReactNode } from 'react';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
 import { Badge } from '@/components/ui/badge';
@@ -19,7 +19,7 @@ type TestElementProps = {
   type?: string;
 };
 
-function flattenElements(node: ReactNode): Array<React.ReactElement<TestElementProps>> {
+function flattenElements(node: ReactNode): Array<ReactElement<TestElementProps>> {
   if (Array.isArray(node)) {
     return node.flatMap(flattenElements);
   }
@@ -34,6 +34,44 @@ function flattenElements(node: ReactNode): Array<React.ReactElement<TestElementP
 afterEach(() => {
   mock.restore();
 });
+
+function installAuthorActionMocks() {
+  const actionStub = async () => {};
+  mock.module('@/app/actions', () => ({
+    createRoomAction: actionStub,
+    hostRoomAction: actionStub,
+    joinRoomAction: actionStub,
+    addOptionAction: actionStub,
+    addQuestionAction: actionStub,
+    deleteOptionAction: actionStub,
+    deleteQuestionAction: actionStub,
+    moveOptionAction: actionStub,
+    moveQuestionAction: actionStub,
+    publishQuizAction: actionStub,
+    reconnectRoomAction: actionStub,
+    removeQuizImageAction: actionStub,
+    saveQuestionAction: actionStub,
+    saveQuizDetailsAction: actionStub,
+    signInDemoAuthorAction: actionStub,
+    submitAnswerAction: actionStub,
+    uploadQuizImageAction: actionStub,
+  }));
+}
+
+function installRequestCookieMock(locale: 'cs' | 'en' = 'cs') {
+  mock.module('next/headers', () => ({
+    cookies: async () => ({
+      get: (name: string) => {
+        if (name === 'quiz-locale') {
+          return { value: locale };
+        }
+
+        return undefined;
+      },
+      set: () => {},
+    }),
+  }));
+}
 
 describe('shared UI slice surfaces', () => {
   test('page shell and section card are composed from shared shadcn primitives', () => {
@@ -55,18 +93,7 @@ describe('shared UI slice surfaces', () => {
   });
 
   test('join room form uses shared input, label, and button primitives with the same field contract', async () => {
-    const actionStub = async () => {};
-    mock.module('@/app/actions', () => ({
-      createRoomAction: actionStub,
-      hostRoomAction: actionStub,
-      joinRoomAction: actionStub,
-      publishQuizAction: actionStub,
-      removeQuizImageAction: actionStub,
-      saveQuizDetailsAction: actionStub,
-      signInDemoAuthorAction: actionStub,
-      submitAnswerAction: actionStub,
-      uploadQuizImageAction: actionStub,
-    }));
+    installAuthorActionMocks();
 
     const { JoinRoomForm } = await import('@/components/join-room-form');
     const elements = flattenElements(
@@ -91,15 +118,23 @@ describe('shared UI slice surfaces', () => {
   });
 
   test('authoring page exposes question and option image controls through the shared form primitives', async () => {
-    mock.module('@/lib/server/demo-session', () => ({
-      ensureDemoGuestSessionId: async () => 'guest-1',
-      getDemoAuthorActor: async () => ({ clerkUserId: 'user-1', clerkSessionId: 'session-1' }),
-      getDemoGuestSessionId: async () => null,
-      signInDemoAuthor: async () => {},
-      signOutDemoAuthor: async () => {},
+    mock.module('server-only', () => ({}));
+    installRequestCookieMock();
+    installAuthorActionMocks();
+    mock.module('@/lib/server/author-auth', () => ({
+      CLERK_SIGN_IN_PATH: '/sign-in',
+      getProtectedAuthorActor: async () => ({ clerkUserId: 'user-1', clerkSessionId: 'session-1' }),
+      getProtectedAuthorState: async () => ({ status: 'authenticated', actor: { clerkUserId: 'user-1', clerkSessionId: 'session-1' } }),
+      requireProtectedAuthorActor: async () => ({ clerkUserId: 'user-1', clerkSessionId: 'session-1' }),
     }));
-    mock.module('@/lib/server/demo-app-service', () => ({
-      getDemoAppService: () => ({
+    mock.module('@/lib/server/app-service', () => ({
+      getAppOperationalReadiness: () => ({
+        authoring: { isConfigured: true, missingKeys: [] },
+        runtime: { canCreateRooms: true, canIssueHostClaims: true, missing: [] },
+        canLoadAuthoring: true,
+        canBootstrapRooms: true,
+      }),
+      getAppService: () => ({
         listQuizSummaries: () => [{ quiz_id: 'quiz-1', title: 'Quiz 1', status: 'published', question_count: 1, updated_at: '2026-03-06T12:00:00.000Z' }],
         loadQuizDocument: async () => ({
           quiz: {
@@ -166,28 +201,38 @@ describe('shared UI slice surfaces', () => {
 
     expect(elements.filter((element) => element.type === Input && element.props.type === 'file' && element.props.name === 'image').length).toBe(2);
     expect(elements.some((element) => element.type === Input && element.props.accept?.includes('image/png'))).toBe(true);
-    expect(elements.some((element) => element.type === 'img' && typeof element.props.alt === 'string' && ['Náhled otázky 1', 'Question preview 1'].includes(element.props.alt))).toBe(true);
-    expect(elements.some((element) => element.type === 'img' && typeof element.props.alt === 'string' && ['Náhled možnosti 1', 'Option preview 1'].includes(element.props.alt))).toBe(true);
-    expect(elements.some((element) => element.type === Button && element.props.children === 'Remove question image')).toBe(true);
-    expect(elements.some((element) => element.type === Button && element.props.children === 'Remove option image')).toBe(true);
+    expect(elements.some((element) => element.type === 'img' && typeof element.props.alt === 'string' && ['Náhled otázky', 'Question preview'].includes(element.props.alt))).toBe(true);
+    expect(elements.some((element) => element.type === 'img' && typeof element.props.alt === 'string' && ['Náhled možnosti', 'Option preview'].includes(element.props.alt))).toBe(true);
+    expect(elements.some((element) => ['button', Button].includes(element.type as never) && ['Odstranit obrázek otázky', 'Remove question image'].includes(String(element.props.children)))).toBe(true);
+    expect(elements.some((element) => ['button', Button].includes(element.type as never) && ['Odstranit obrázek možnosti', 'Remove option image'].includes(String(element.props.children)))).toBe(true);
   });
 
   test('host page renders runtime question and option images when the active room state includes them', async () => {
-    const actionStub = async () => {};
-    mock.module('@/app/actions', () => ({
-      hostRoomAction: actionStub,
-      signInDemoAuthorAction: actionStub,
-      submitAnswerAction: actionStub,
+    mock.module('server-only', () => ({}));
+    installRequestCookieMock();
+    installAuthorActionMocks();
+    mock.module('@/lib/server/author-auth', () => ({
+      CLERK_SIGN_IN_PATH: '/sign-in',
+      getProtectedAuthorActor: async () => ({ clerkUserId: 'user-1', clerkSessionId: 'session-1' }),
+      getProtectedAuthorState: async () => ({ status: 'authenticated', actor: { clerkUserId: 'user-1', clerkSessionId: 'session-1' } }),
+      requireProtectedAuthorActor: async () => ({ clerkUserId: 'user-1', clerkSessionId: 'session-1' }),
     }));
     mock.module('@/lib/server/demo-session', () => ({
+      ensureDemoHostSessionId: async () => 'host-1',
       ensureDemoGuestSessionId: async () => 'guest-1',
-      getDemoAuthorActor: async () => ({ clerkUserId: 'user-1', clerkSessionId: 'session-1' }),
-      getDemoGuestSessionId: async () => null,
-      signInDemoAuthor: async () => {},
-      signOutDemoAuthor: async () => {},
+      getDemoGuestSessionId: async () => 'guest-1',
+      getDemoPlayerBinding: async () => null,
+      setDemoPlayerBinding: async () => {},
+      clearDemoPlayerBinding: async () => {},
     }));
-    mock.module('@/lib/server/demo-app-service', () => ({
-      getDemoAppService: () => ({
+    mock.module('@/lib/server/app-service', () => ({
+      getAppOperationalReadiness: () => ({
+        authoring: { isConfigured: true, missingKeys: [] },
+        runtime: { canCreateRooms: true, canIssueHostClaims: true, missing: [] },
+        canLoadAuthoring: true,
+        canBootstrapRooms: true,
+      }),
+      getAppService: () => ({
         listActiveRooms: () => [{ room_code: 'ABCD12', lifecycle_state: 'in_progress', joined_player_count: 1 }],
         findHostRoomDetails: () => ({
           bootstrap: { source_quiz_id: 'quiz-1' },
@@ -240,21 +285,31 @@ describe('shared UI slice surfaces', () => {
   });
 
   test('host page stays text-only when the active question has no images', async () => {
-    const actionStub = async () => {};
-    mock.module('@/app/actions', () => ({
-      hostRoomAction: actionStub,
-      signInDemoAuthorAction: actionStub,
-      submitAnswerAction: actionStub,
+    mock.module('server-only', () => ({}));
+    installRequestCookieMock();
+    installAuthorActionMocks();
+    mock.module('@/lib/server/author-auth', () => ({
+      CLERK_SIGN_IN_PATH: '/sign-in',
+      getProtectedAuthorActor: async () => ({ clerkUserId: 'user-1', clerkSessionId: 'session-1' }),
+      getProtectedAuthorState: async () => ({ status: 'authenticated', actor: { clerkUserId: 'user-1', clerkSessionId: 'session-1' } }),
+      requireProtectedAuthorActor: async () => ({ clerkUserId: 'user-1', clerkSessionId: 'session-1' }),
     }));
     mock.module('@/lib/server/demo-session', () => ({
+      ensureDemoHostSessionId: async () => 'host-1',
       ensureDemoGuestSessionId: async () => 'guest-1',
-      getDemoAuthorActor: async () => ({ clerkUserId: 'user-1', clerkSessionId: 'session-1' }),
-      getDemoGuestSessionId: async () => null,
-      signInDemoAuthor: async () => {},
-      signOutDemoAuthor: async () => {},
+      getDemoGuestSessionId: async () => 'guest-1',
+      getDemoPlayerBinding: async () => null,
+      setDemoPlayerBinding: async () => {},
+      clearDemoPlayerBinding: async () => {},
     }));
-    mock.module('@/lib/server/demo-app-service', () => ({
-      getDemoAppService: () => ({
+    mock.module('@/lib/server/app-service', () => ({
+      getAppOperationalReadiness: () => ({
+        authoring: { isConfigured: true, missingKeys: [] },
+        runtime: { canCreateRooms: true, canIssueHostClaims: true, missing: [] },
+        canLoadAuthoring: true,
+        canBootstrapRooms: true,
+      }),
+      getAppService: () => ({
         listActiveRooms: () => [{ room_code: 'ABCD12', lifecycle_state: 'in_progress', joined_player_count: 1 }],
         findHostRoomDetails: () => ({
           bootstrap: { source_quiz_id: 'quiz-1' },
@@ -283,21 +338,19 @@ describe('shared UI slice surfaces', () => {
   });
 
   test('play page renders runtime question and option images when present', async () => {
-    const actionStub = async () => {};
-    mock.module('@/app/actions', () => ({
-      submitAnswerAction: actionStub,
-      hostRoomAction: actionStub,
-      signInDemoAuthorAction: actionStub,
-    }));
+    mock.module('server-only', () => ({}));
+    installRequestCookieMock();
+    installAuthorActionMocks();
     mock.module('@/lib/server/demo-session', () => ({
       ensureDemoGuestSessionId: async () => 'guest-1',
-      getDemoAuthorActor: async () => null,
+      ensureDemoHostSessionId: async () => 'host-1',
       getDemoGuestSessionId: async () => 'guest-1',
-      signInDemoAuthor: async () => {},
-      signOutDemoAuthor: async () => {},
+      getDemoPlayerBinding: async () => null,
+      setDemoPlayerBinding: async () => {},
+      clearDemoPlayerBinding: async () => {},
     }));
-    mock.module('@/lib/server/demo-app-service', () => ({
-      getDemoAppService: () => ({
+    mock.module('@/lib/server/app-service', () => ({
+      getAppService: () => ({
         findPlayerRoomState: () => ({
           shared_room: { room_code: 'ABCD12', lifecycle_state: 'in_progress', question_phase: 'question_open' },
           active_question: {
@@ -349,21 +402,19 @@ describe('shared UI slice surfaces', () => {
   });
 
   test('play page stays text-only when the active question has no images', async () => {
-    const actionStub = async () => {};
-    mock.module('@/app/actions', () => ({
-      submitAnswerAction: actionStub,
-      hostRoomAction: actionStub,
-      signInDemoAuthorAction: actionStub,
-    }));
+    mock.module('server-only', () => ({}));
+    installRequestCookieMock();
+    installAuthorActionMocks();
     mock.module('@/lib/server/demo-session', () => ({
       ensureDemoGuestSessionId: async () => 'guest-1',
-      getDemoAuthorActor: async () => null,
+      ensureDemoHostSessionId: async () => 'host-1',
       getDemoGuestSessionId: async () => 'guest-1',
-      signInDemoAuthor: async () => {},
-      signOutDemoAuthor: async () => {},
+      getDemoPlayerBinding: async () => null,
+      setDemoPlayerBinding: async () => {},
+      clearDemoPlayerBinding: async () => {},
     }));
-    mock.module('@/lib/server/demo-app-service', () => ({
-      getDemoAppService: () => ({
+    mock.module('@/lib/server/app-service', () => ({
+      getAppService: () => ({
         findPlayerRoomState: () => ({
           shared_room: { room_code: 'ABCD12', lifecycle_state: 'in_progress', question_phase: 'question_open' },
           active_question: {

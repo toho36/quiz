@@ -11,6 +11,7 @@ import {
   type AnswerSubmissionCommand,
   type AnswerSubmissionRecord,
   type LeaderboardEntry,
+  type PlayerReconnectCommand,
   type RuntimeQuestionOptionSnapshot,
   type RuntimeQuestionSnapshot,
   type RuntimeQuestionState,
@@ -66,38 +67,48 @@ export function createRuntimeGameplayService({ clock = () => new Date() }: Runti
 
   function reconnectPlayer(input: {
     room: RuntimeRoom;
-    player: RuntimeRoomPlayer;
-    command: { room_id: string; room_player_id: string; resume_token: string };
-    presentedResumeTokenHash: string;
-    nextResumeTokenHash: string;
+    players: RuntimeRoomPlayer[];
+    command: PlayerReconnectCommand;
+    generateResumeToken: () => string;
+    hashResumeToken: (token: string) => string;
   }) {
     const room = runtimeRoomSchema.parse(input.room);
-    const player = runtimeRoomPlayerSchema.parse(input.player);
+    const players = input.players.map((player) => runtimeRoomPlayerSchema.parse(player));
     const command = playerReconnectCommandSchema.parse(input.command);
     const reconnectedAt = now(clock);
 
-    assertRoomActive(room, reconnectedAt);
-    if (player.room_id !== room.room_id) {
-      throw new InvalidOperationError('Player reconnect must stay room-scoped');
+    assertReconnectableRoom(room, reconnectedAt);
+    if (command.room_id !== room.room_id) {
+      throw new InvalidOperationError('Reconnect must target the active room');
     }
-    if (command.room_id !== room.room_id || command.room_player_id !== player.room_player_id) {
-      throw new InvalidOperationError('Player reconnect must target the bound room player');
+
+    const player = players.find((entry) => entry.room_player_id === command.room_player_id);
+    if (!player) {
+      throw new InvalidOperationError('Reconnect requires a known room-scoped player');
     }
     if (Date.parse(reconnectedAt) > Date.parse(player.resume_expires_at)) {
       throw new InvalidOperationError('expired_resume_token');
     }
-    if (player.resume_token_hash !== input.presentedResumeTokenHash) {
+    if (input.hashResumeToken(command.resume_token) !== player.resume_token_hash) {
       throw new InvalidOperationError('stale_resume_token');
     }
 
-    return runtimeRoomPlayerSchema.parse({
+    const nextResumeToken = input.generateResumeToken();
+    const updatedPlayer = runtimeRoomPlayerSchema.parse({
       ...player,
-      status: 'connected',
-      resume_token_hash: input.nextResumeTokenHash,
+      resume_token_hash: input.hashResumeToken(nextResumeToken),
       resume_version: player.resume_version + 1,
       resume_expires_at: resolveResumeTokenExpiry(room, reconnectedAt),
       last_seen_at: reconnectedAt,
+      status: 'connected',
     });
+
+    return {
+      player: updatedPlayer,
+      updatedPlayers: players.map((entry) => (entry.room_player_id === updatedPlayer.room_player_id ? updatedPlayer : entry)),
+      resumeToken: nextResumeToken,
+      resumeExpiresAt: updatedPlayer.resume_expires_at,
+    };
   }
 
   function startGame(input: { room: RuntimeRoom; questionSnapshots: RuntimeQuestionSnapshot[] }) {
@@ -125,6 +136,23 @@ export function createRuntimeGameplayService({ clock = () => new Date() }: Runti
       }),
       questionState: openQuestionState(firstQuestion, startedAt),
     };
+  }
+
+  function abortGame(input: { room: RuntimeRoom; endedAt?: string }) {
+    const room = runtimeRoomSchema.parse(input.room);
+    const endedAt = input.endedAt ?? now(clock);
+    assertRoomActive(room, endedAt);
+    if (room.lifecycle_state !== 'lobby' && room.lifecycle_state !== 'in_progress') {
+      throw new InvalidOperationError('Only lobby or in-progress rooms can be aborted');
+    }
+
+    return runtimeRoomSchema.parse({
+      ...room,
+      lifecycle_state: 'aborted',
+      current_question_index: null,
+      ended_at: endedAt,
+      expires_at: addDuration(endedAt, POST_GAME_TTL_MS),
+    });
   }
 
   function closeQuestion(input: { room: RuntimeRoom; questionState: RuntimeQuestionState }) {
@@ -163,23 +191,6 @@ export function createRuntimeGameplayService({ clock = () => new Date() }: Runti
       ...questionState,
       phase: 'leaderboard',
       leaderboard_shown_at: shownAt,
-    });
-  }
-
-  function abortGame(input: { room: RuntimeRoom }) {
-    const room = runtimeRoomSchema.parse(input.room);
-    const endedAt = now(clock);
-    assertRoomActive(room, endedAt);
-    if (room.lifecycle_state !== 'lobby' && room.lifecycle_state !== 'in_progress') {
-      throw new InvalidOperationError('Only lobby or in-progress rooms can be aborted');
-    }
-
-    return runtimeRoomSchema.parse({
-      ...room,
-      lifecycle_state: 'aborted',
-      current_question_index: null,
-      ended_at: endedAt,
-      expires_at: addDuration(endedAt, POST_GAME_TTL_MS),
     });
   }
 
@@ -353,10 +364,10 @@ export function createRuntimeGameplayService({ clock = () => new Date() }: Runti
     joinPlayer,
     reconnectPlayer,
     startGame,
+    abortGame,
     closeQuestion,
     revealQuestion,
     showLeaderboard,
-    abortGame,
     advanceAfterLeaderboard,
     acceptSubmission,
     finalizeQuestion,
@@ -403,6 +414,10 @@ function assertRoomActive(room: RuntimeRoom, nowIso: string) {
   if (Date.parse(nowIso) > Date.parse(room.expires_at) || room.lifecycle_state === 'expired') {
     throw new InvalidOperationError('Expired rooms reject gameplay actions');
   }
+}
+
+function assertReconnectableRoom(room: RuntimeRoom, nowIso: string) {
+  assertRoomActive(room, nowIso);
 }
 
 function assertQuestionTransition(

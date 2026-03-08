@@ -1,6 +1,5 @@
-import type { Route } from 'next';
 import Link from 'next/link';
-import { submitAnswerAction } from '@/app/actions';
+import { reconnectRoomAction, submitAnswerAction } from '@/app/actions';
 import { LocaleSwitcher } from '@/components/locale-switcher';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
@@ -8,8 +7,8 @@ import { Button } from '@/components/ui/button';
 import { buildRuntimeQuizImageSrc } from '@/lib/client/runtime';
 import { formatPlayerSubmissionStatus, formatQuestionPhase, formatRoomLifecycle } from '@/lib/i18n/app-shell';
 import { getLocaleContext } from '@/lib/i18n/server';
-import { getDemoAppService } from '@/lib/server/demo-app-service';
-import { getDemoGuestSessionId } from '@/lib/server/demo-session';
+import { getAppService } from '@/lib/server/app-service';
+import { getDemoGuestSessionId, getDemoPlayerBinding } from '@/lib/server/demo-session';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,7 +33,8 @@ export default async function PlayPage({
     getLocaleContext(),
   ]);
   const roomCode = rawRoomCode.toUpperCase();
-  const state = guestSessionId ? getDemoAppService().findPlayerRoomState({ guestSessionId, roomCode }) : null;
+  const storedBinding = await getDemoPlayerBinding(roomCode);
+  const state = guestSessionId ? getAppService().findPlayerRoomState({ guestSessionId, roomCode }) : null;
   const notice = getValue(resolvedSearchParams.notice);
   const error = getValue(resolvedSearchParams.error);
   const nextPath = `/play/${encodeURIComponent(roomCode)}` as const;
@@ -57,12 +57,31 @@ export default async function PlayPage({
 
       {!state ? (
         <SectionCard title={dictionary.playPage.joinFirstTitle} eyebrow={dictionary.playPage.joinFirstEyebrow}>
-          <p className="text-sm text-slate-300">
-            {dictionary.playPage.joinFirstDescriptionPrefix} {roomCode} {dictionary.playPage.joinFirstDescriptionSuffix}
-          </p>
-          <Link className="mt-4 inline-flex text-sm font-medium text-sky-300 hover:text-sky-200" href={`/join?roomCode=${roomCode}` as Route}>
-            {dictionary.playPage.goToJoinFlow}
-          </Link>
+          {storedBinding ? (
+            <>
+              <p className="text-sm text-slate-300">
+                A stored player credential was found for {roomCode}. Reconnect to resume the same room-scoped player identity with a rotated token.
+              </p>
+              <form action={reconnectRoomAction} className="mt-4">
+                <input name="roomCode" type="hidden" value={roomCode} />
+                <button className="rounded-full bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950" type="submit">
+                  Reconnect player session
+                </button>
+              </form>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-slate-300">
+                No player session is bound to {roomCode} yet. Use the join flow to create a room-scoped player identity before playing.
+              </p>
+              <Link
+                className="mt-4 inline-flex text-sm font-medium text-sky-300 hover:text-sky-200"
+                href={`/join?roomCode=${roomCode}`}
+              >
+                {dictionary.playPage.goToJoinFlow}
+              </Link>
+            </>
+          )}
         </SectionCard>
       ) : (
         <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">

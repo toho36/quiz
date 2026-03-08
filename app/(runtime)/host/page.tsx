@@ -1,6 +1,5 @@
-import type { Route } from 'next';
 import Link from 'next/link';
-import { hostRoomAction, signInDemoAuthorAction } from '@/app/actions';
+import { hostRoomAction } from '@/app/actions';
 import { LocaleSwitcher } from '@/components/locale-switcher';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
@@ -8,11 +7,12 @@ import { Button } from '@/components/ui/button';
 import { buildRuntimeQuizImageSrc } from '@/lib/client/runtime';
 import { formatHostAction, formatQuestionPhase, formatRoomLifecycle } from '@/lib/i18n/app-shell';
 import { getLocaleContext } from '@/lib/i18n/server';
-import { getDemoAppService } from '@/lib/server/demo-app-service';
-import { getDemoAuthorActor } from '@/lib/server/demo-session';
+import { getAppOperationalReadiness, getAppService } from '@/lib/server/app-service';
+import { CLERK_SIGN_IN_PATH, getProtectedAuthorState } from '@/lib/server/author-auth';
+import { ensureDemoHostSessionId } from '@/lib/server/demo-session';
+import { AuthorizationError } from '@/lib/server/service-errors';
 
 export const dynamic = 'force-dynamic';
-
 function getValue(value: string | string[] | undefined) {
   return typeof value === 'string' ? value : undefined;
 }
@@ -24,13 +24,17 @@ export default async function HostPage({
 }: {
   searchParams: HostSearchParams;
 }) {
-  const [actor, resolvedSearchParams, { locale, dictionary }] = await Promise.all([getDemoAuthorActor(), searchParams, getLocaleContext()]);
+  const [authorState, resolvedSearchParams, { locale, dictionary }] = await Promise.all([
+    getProtectedAuthorState(),
+    searchParams,
+    getLocaleContext(),
+  ]);
   const notice = getValue(resolvedSearchParams.notice);
   const error = getValue(resolvedSearchParams.error);
   const selectedRoomCode = getValue(resolvedSearchParams.roomCode);
   const nextPath = selectedRoomCode ? (`/host?roomCode=${selectedRoomCode}` as const) : '/host';
 
-  if (!actor) {
+  if (authorState.status !== 'authenticated') {
     return (
       <PageShell
         eyebrow={dictionary.routes.items.host.label}
@@ -39,20 +43,46 @@ export default async function HostPage({
         actions={<LocaleSwitcher locale={locale} nextPath={nextPath} dictionary={dictionary} />}
       >
         <SectionCard title={dictionary.hostPage.signInTitle} eyebrow={dictionary.hostPage.signInEyebrow}>
-          <form action={signInDemoAuthorAction} className="mt-2">
-            <input name="next" type="hidden" value="/host" />
-            <Button className="h-10 rounded-full px-4" type="submit">
-              {dictionary.landing.continueAsDemoAuthor}
-            </Button>
-          </form>
+          {authorState.status === 'unauthenticated' ? (
+            <div className="mt-2">
+              <Button asChild className="h-10 rounded-full px-4">
+                <Link href={CLERK_SIGN_IN_PATH}>{dictionary.hostPage.signInTitle}</Link>
+              </Button>
+            </div>
+          ) : (
+            <div className="mt-2 space-y-2 text-sm text-muted-foreground">
+              <p>{authorState.message}</p>
+              {authorState.missingEnvKeys.length > 0 ? <p>Missing env: {authorState.missingEnvKeys.join(', ')}</p> : null}
+            </div>
+          )}
         </SectionCard>
       </PageShell>
     );
   }
 
-  const app = getDemoAppService();
+  const actor = authorState.actor;
+  const hostSessionId = await ensureDemoHostSessionId();
+  const readiness = getAppOperationalReadiness();
+  const app = getAppService();
   const rooms = app.listActiveRooms(actor);
-  const details = selectedRoomCode ? app.findHostRoomDetails({ actor, roomCode: selectedRoomCode }) : null;
+  let pageError = error;
+  let details = null;
+
+  if (selectedRoomCode) {
+    try {
+      details = app.findHostRoomDetails({
+        actor,
+        roomCode: selectedRoomCode,
+        transportSessionId: hostSessionId,
+      });
+    } catch (hostError) {
+      if (hostError instanceof AuthorizationError) {
+        pageError ??= hostError.message;
+      } else {
+        throw hostError;
+      }
+    }
+  }
 
   return (
     <PageShell
@@ -61,12 +91,18 @@ export default async function HostPage({
       description={dictionary.hostPage.description}
       actions={<LocaleSwitcher locale={locale} nextPath={nextPath} dictionary={dictionary} />}
     >
-      {(notice || error) && (
+      {(notice || pageError) && (
         <SectionCard
-          title={error ? dictionary.hostPage.errorTitle : dictionary.hostPage.updatedTitle}
-          eyebrow={error ? dictionary.hostPage.errorEyebrow : dictionary.hostPage.updatedEyebrow}
+          title={pageError ? dictionary.hostPage.errorTitle : dictionary.hostPage.updatedTitle}
+          eyebrow={pageError ? dictionary.hostPage.errorEyebrow : dictionary.hostPage.updatedEyebrow}
         >
-          <p className="text-sm text-slate-300">{error ?? notice}</p>
+          <p className="text-sm text-slate-300">{pageError ?? notice}</p>
+        </SectionCard>
+      )}
+
+      {!readiness.canBootstrapRooms && (
+        <SectionCard title={dictionary.hostPage.errorTitle} eyebrow={dictionary.hostPage.errorEyebrow}>
+          <p className="text-sm text-slate-300">Missing env: {readiness.runtime.missing.join(', ')}</p>
         </SectionCard>
       )}
 
@@ -81,7 +117,7 @@ export default async function HostPage({
                   <span>
                     {room.room_code} · {formatRoomLifecycle(dictionary, room.lifecycle_state)} · {dictionary.appLabels.joinedPlayersLabel}: {room.joined_player_count}
                   </span>
-                  <Link className="text-sky-300 hover:text-sky-200" href={`/host?roomCode=${room.room_code}` as Route}>
+                  <Link className="text-sky-300 hover:text-sky-200" href={`/host?roomCode=${room.room_code}`}>
                     {dictionary.hostPage.openHostRoom}
                   </Link>
                 </li>
@@ -111,7 +147,7 @@ export default async function HostPage({
               <div>
                 <dt className="text-slate-500">{dictionary.appLabels.joinUrlLabel}</dt>
                 <dd>
-                  <Link className="text-sky-300 hover:text-sky-200" href={`/join?roomCode=${details.state.shared_room.room_code}` as Route}>
+                  <Link className="text-sky-300 hover:text-sky-200" href={`/join?roomCode=${details.state.shared_room.room_code}`}>
                     {dictionary.hostPage.openJoinFlow} {details.state.shared_room.room_code}
                   </Link>
                 </dd>
@@ -122,6 +158,7 @@ export default async function HostPage({
                 {details.state.allowed_actions.map((action) => (
                   <form key={action} action={hostRoomAction}>
                     <input name="roomCode" type="hidden" value={details.state.shared_room.room_code} />
+                    <input name="transportSessionId" type="hidden" value={hostSessionId} />
                     <input name="action" type="hidden" value={action} />
                     <Button className="h-10 rounded-full px-4" type="submit">
                       {formatHostAction(dictionary, action)}

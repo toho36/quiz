@@ -113,44 +113,36 @@ describe('runtime gameplay service', () => {
     expect(started.room.expires_at).toBe('2026-03-06T12:00:10.000Z');
   });
 
-  test('aborts lobby and in-progress rooms into a read-only post-game lifecycle', () => {
+  test('aborts lobby and in-progress rooms with the documented post-abort ttl', () => {
     const service = createRuntimeGameplayService({
-      clock: () => new Date('2026-03-06T10:05:00.000Z'),
+      clock: () => new Date('2026-03-06T10:15:00.000Z'),
     });
 
     const abortedLobby = service.abortGame({ room: createLobbyRoom() });
 
     expect(abortedLobby.lifecycle_state).toBe('aborted');
-    expect(abortedLobby.current_question_index).toBeNull();
     expect(abortedLobby.started_at).toBeNull();
-    expect(abortedLobby.ended_at).toBe('2026-03-06T10:05:00.000Z');
-    expect(abortedLobby.expires_at).toBe('2026-03-06T10:35:00.000Z');
+    expect(abortedLobby.ended_at).toBe('2026-03-06T10:15:00.000Z');
+    expect(abortedLobby.expires_at).toBe('2026-03-06T10:45:00.000Z');
 
-    const started = service.startGame({
-      room: createLobbyRoom(),
-      questionSnapshots: [runtimeQuestionSnapshotFixture],
-    });
-    const abortedActive = service.abortGame({ room: started.room });
+    const abortedInProgress = service.abortGame({ room: runtimeRoomFixture });
 
-    expect(abortedActive.lifecycle_state).toBe('aborted');
-    expect(abortedActive.current_question_index).toBeNull();
-    expect(abortedActive.started_at).toBe('2026-03-06T10:05:00.000Z');
-    expect(abortedActive.ended_at).toBe('2026-03-06T10:05:00.000Z');
-    expect(abortedActive.expires_at).toBe('2026-03-06T10:35:00.000Z');
-  });
+    expect(abortedInProgress.lifecycle_state).toBe('aborted');
+    expect(abortedInProgress.current_question_index).toBeNull();
+    expect(abortedInProgress.ended_at).toBe('2026-03-06T10:15:00.000Z');
+    expect(abortedInProgress.expires_at).toBe('2026-03-06T10:45:00.000Z');
 
-  test('rejects aborting rooms that are already read-only', () => {
-    const service = createRuntimeGameplayService({
+    const readOnlyService = createRuntimeGameplayService({
       clock: () => new Date('2026-03-06T10:05:00.000Z'),
     });
 
     expect(() =>
-      service.abortGame({
+      readOnlyService.abortGame({
         room: {
           ...runtimeRoomFixture,
           lifecycle_state: 'finished' as const,
-          ended_at: '2026-03-06T10:04:00.000Z',
-          expires_at: '2026-03-06T10:34:00.000Z',
+          ended_at: '2026-03-06T10:10:00.000Z',
+          expires_at: '2026-03-06T10:40:00.000Z',
         },
       }),
     ).toThrow(InvalidOperationError);
@@ -172,83 +164,188 @@ describe('runtime gameplay service', () => {
     ).toThrow(InvalidOperationError);
   });
 
-  test('rotates reconnect tokens and rejects replayed or expired resume tokens', () => {
+  test('rotates reconnect tokens for lobby sessions and rejects replayed or expired resume tokens', () => {
     let currentTime = new Date('2026-03-06T10:00:05.000Z');
     const service = createRuntimeGameplayService({
       clock: () => currentTime,
     });
 
-    const joined = service.joinPlayer({
-      room: createLobbyRoom(),
-      players: [],
-      roomPlayerId: 'player-1',
-      displayName: 'Player One',
-      resumeTokenHash: 'resume-hash-1',
-    });
-
-    expect(joined.resume_version).toBe(1);
-    expect(joined.resume_expires_at).toBe('2026-03-06T22:00:05.000Z');
+    const room = createLobbyRoom();
+    const players = [createPlayer({ resume_token_hash: 'hash:resume-current' })];
 
     currentTime = new Date('2026-03-06T10:15:00.000Z');
 
     const reconnected = service.reconnectPlayer({
-      room: createLobbyRoom(),
-      player: joined,
+      room,
+      players,
       command: {
-        room_id: 'room-1',
+        room_id: room.room_id,
         room_player_id: 'player-1',
-        resume_token: 'opaque-resume-token',
+        resume_token: 'resume-current',
       },
-      presentedResumeTokenHash: 'resume-hash-1',
-      nextResumeTokenHash: 'resume-hash-2',
+      generateResumeToken: () => 'resume-next',
+      hashResumeToken: (token) => `hash:${token}`,
     });
 
-    expect(reconnected.resume_token_hash).toBe('resume-hash-2');
-    expect(reconnected.resume_version).toBe(2);
-    expect(reconnected.resume_expires_at).toBe('2026-03-06T22:15:00.000Z');
-    expect(reconnected.last_seen_at).toBe('2026-03-06T10:15:00.000Z');
+    expect(reconnected.resumeToken).toBe('resume-next');
+    expect(reconnected.resumeExpiresAt).toBe('2026-03-06T22:15:00.000Z');
+    expect(reconnected.updatedPlayers[0]).toMatchObject({
+      room_player_id: 'player-1',
+      resume_token_hash: 'hash:resume-next',
+      resume_version: 2,
+      last_seen_at: '2026-03-06T10:15:00.000Z',
+      status: 'connected',
+    });
 
-    let replayError: unknown;
-    try {
+    expect(() =>
       service.reconnectPlayer({
-        room: createLobbyRoom(),
-        player: reconnected,
+        room,
+        players: reconnected.updatedPlayers,
         command: {
-          room_id: 'room-1',
+          room_id: room.room_id,
           room_player_id: 'player-1',
-          resume_token: 'opaque-resume-token',
+          resume_token: 'resume-current',
         },
-        presentedResumeTokenHash: 'resume-hash-1',
-        nextResumeTokenHash: 'resume-hash-3',
-      });
-    } catch (error) {
-      replayError = error;
-    }
-
-    expect(replayError).toBeInstanceOf(InvalidOperationError);
-    expect((replayError as Error).message).toBe('stale_resume_token');
+        generateResumeToken: () => 'resume-third',
+        hashResumeToken: (token) => `hash:${token}`,
+      }),
+    ).toThrow(InvalidOperationError);
 
     currentTime = new Date('2026-03-06T22:15:00.001Z');
 
-    let expiredError: unknown;
-    try {
+    expect(() =>
       service.reconnectPlayer({
-        room: createLobbyRoom(),
-        player: reconnected,
+        room,
+        players: reconnected.updatedPlayers,
         command: {
-          room_id: 'room-1',
+          room_id: room.room_id,
           room_player_id: 'player-1',
-          resume_token: 'rotated-resume-token',
+          resume_token: 'resume-next',
         },
-        presentedResumeTokenHash: 'resume-hash-2',
-        nextResumeTokenHash: 'resume-hash-3',
-      });
-    } catch (error) {
-      expiredError = error;
-    }
+        generateResumeToken: () => 'resume-expired',
+        hashResumeToken: (token) => `hash:${token}`,
+      }),
+    ).toThrow(InvalidOperationError);
+  });
 
-    expect(expiredError).toBeInstanceOf(InvalidOperationError);
-    expect((expiredError as Error).message).toBe('expired_resume_token');
+  test('rotates reconnect tokens, rejects replay, and only allows reconnect before expiry', () => {
+    const service = createRuntimeGameplayService({
+      clock: () => new Date('2026-03-06T10:00:25.000Z'),
+    });
+    const room = {
+      ...runtimeRoomFixture,
+      lifecycle_state: 'finished' as const,
+      ended_at: '2026-03-06T10:00:20.000Z',
+      expires_at: '2026-03-06T10:30:20.000Z',
+    };
+    const players = [createPlayer({ resume_token_hash: 'hash:resume-current' })];
+
+    const reconnected = service.reconnectPlayer({
+      room,
+      players,
+      command: {
+        room_id: room.room_id,
+        room_player_id: 'player-1',
+        resume_token: 'resume-current',
+      },
+      generateResumeToken: () => 'resume-next',
+      hashResumeToken: (token) => `hash:${token}`,
+    });
+
+    expect(reconnected.resumeToken).toBe('resume-next');
+    expect(reconnected.resumeExpiresAt).toBe(room.expires_at);
+    expect(reconnected.updatedPlayers[0]).toMatchObject({
+      room_player_id: 'player-1',
+      resume_token_hash: 'hash:resume-next',
+      last_seen_at: '2026-03-06T10:00:25.000Z',
+      status: 'connected',
+    });
+
+    expect(() =>
+      service.reconnectPlayer({
+        room,
+        players: reconnected.updatedPlayers,
+        command: {
+          room_id: room.room_id,
+          room_player_id: 'player-1',
+          resume_token: 'resume-current',
+        },
+        generateResumeToken: () => 'resume-third',
+        hashResumeToken: (token) => `hash:${token}`,
+      }),
+    ).toThrow(InvalidOperationError);
+
+    const expiredService = createRuntimeGameplayService({
+      clock: () => new Date('2026-03-06T10:30:20.001Z'),
+    });
+
+    expect(() =>
+      expiredService.reconnectPlayer({
+        room,
+        players,
+        command: {
+          room_id: room.room_id,
+          room_player_id: 'player-1',
+          resume_token: 'resume-current',
+        },
+        generateResumeToken: () => 'resume-expired',
+        hashResumeToken: (token) => `hash:${token}`,
+      }),
+    ).toThrow(InvalidOperationError);
+  });
+
+  test('allows reconnect for aborted rooms but rejects unknown players and wrong rooms', () => {
+    const service = createRuntimeGameplayService({
+      clock: () => new Date('2026-03-06T10:05:00.000Z'),
+    });
+    const room = {
+      ...runtimeRoomFixture,
+      lifecycle_state: 'aborted' as const,
+      ended_at: '2026-03-06T10:04:00.000Z',
+      expires_at: '2026-03-06T10:34:00.000Z',
+    };
+
+    expect(
+      service.reconnectPlayer({
+        room,
+        players: [createPlayer({ resume_token_hash: 'hash:resume-aborted' })],
+        command: {
+          room_id: room.room_id,
+          room_player_id: 'player-1',
+          resume_token: 'resume-aborted',
+        },
+        generateResumeToken: () => 'resume-aborted-next',
+        hashResumeToken: (token) => `hash:${token}`,
+      }).updatedPlayers[0]?.resume_token_hash,
+    ).toBe('hash:resume-aborted-next');
+
+    expect(() =>
+      service.reconnectPlayer({
+        room,
+        players: [createPlayer({ resume_token_hash: 'hash:resume-aborted' })],
+        command: {
+          room_id: 'room-2',
+          room_player_id: 'player-1',
+          resume_token: 'resume-aborted',
+        },
+        generateResumeToken: () => 'resume-room-mismatch',
+        hashResumeToken: (token) => `hash:${token}`,
+      }),
+    ).toThrow(InvalidOperationError);
+
+    expect(() =>
+      service.reconnectPlayer({
+        room,
+        players: [createPlayer({ room_player_id: 'player-9', resume_token_hash: 'hash:resume-aborted' })],
+        command: {
+          room_id: room.room_id,
+          room_player_id: 'player-1',
+          resume_token: 'resume-aborted',
+        },
+        generateResumeToken: () => 'resume-unknown-player',
+        hashResumeToken: (token) => `hash:${token}`,
+      }),
+    ).toThrow(InvalidOperationError);
   });
 
   test('rejects question phase transitions for a question state from another room', () => {

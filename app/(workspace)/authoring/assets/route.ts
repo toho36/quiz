@@ -1,5 +1,5 @@
-import { getDemoAppService } from '@/lib/server/demo-app-service';
-import { getDemoAuthorActor } from '@/lib/server/demo-session';
+import { getAppService } from '@/lib/server/app-service';
+import { getProtectedAuthorActor } from '@/lib/server/author-auth';
 import { AuthorizationError, NotFoundError } from '@/lib/server/service-errors';
 
 const AUTHORING_ASSET_NOT_FOUND_MESSAGE = 'Quiz image preview was not found.';
@@ -7,7 +7,7 @@ const AUTHORING_ASSET_LOAD_ERROR_MESSAGE = 'Could not load quiz image preview.';
 
 export async function GET(request: Request) {
   try {
-    const actor = await getDemoAuthorActor();
+    const actor = await getProtectedAuthorActor();
     if (!actor) {
       throw new AuthorizationError('Sign in as the demo author to preview quiz images.');
     }
@@ -19,7 +19,7 @@ export async function GET(request: Request) {
       return new Response('Missing quizId or objectKey.', { status: 400 });
     }
 
-    const asset = await getDemoAppService().readAuthoringQuizImageAsset({ actor, quizId, objectKey });
+    const asset = await getAppService().readAuthoringQuizImageAsset({ actor, quizId, objectKey });
     return new Response(Uint8Array.from(asset.data).buffer, {
       headers: {
         'cache-control': 'no-store',

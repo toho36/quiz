@@ -1,5 +1,6 @@
-import { getDemoAppService } from '@/lib/server/demo-app-service';
-import { getDemoAuthorActor, getDemoGuestSessionId } from '@/lib/server/demo-session';
+import { getAppService } from '@/lib/server/app-service';
+import { getProtectedAuthorActor } from '@/lib/server/author-auth';
+import { getDemoGuestSessionId } from '@/lib/server/demo-session';
 import { AuthorizationError, NotFoundError } from '@/lib/server/service-errors';
 
 const RUNTIME_ASSET_NOT_FOUND_MESSAGE = 'Runtime quiz image was not found.';
@@ -16,11 +17,11 @@ export async function GET(request: Request) {
       return new Response('Missing roomCode, objectKey, or viewer.', { status: 400 });
     }
 
-    const app = getDemoAppService();
+    const app = getAppService();
     const asset = await (
       viewer === 'host'
         ? app.readHostRuntimeQuizImageAsset({
-            actor: (await getDemoAuthorActor()) ?? (() => {
+            actor: (await getProtectedAuthorActor()) ?? (() => {
               throw new AuthorizationError('Sign in as the demo author to load host runtime quiz images.');
             })(),
             roomCode,

@@ -1,14 +1,13 @@
-import type { Route } from 'next';
 import Link from 'next/link';
-import { createRoomAction, publishQuizAction, signInDemoAuthorAction, signOutDemoAuthorAction } from '@/app/actions';
+import { createRoomAction, publishQuizAction } from '@/app/actions';
 import { LocaleSwitcher } from '@/components/locale-switcher';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
 import { Button } from '@/components/ui/button';
 import { formatQuizStatus, formatRoomLifecycle } from '@/lib/i18n/app-shell';
 import { getLocaleContext } from '@/lib/i18n/server';
-import { getDemoAppService } from '@/lib/server/demo-app-service';
-import { getDemoAuthorActor } from '@/lib/server/demo-session';
+import { getAppOperationalReadiness, getAppService } from '@/lib/server/app-service';
+import { CLERK_SIGN_IN_PATH, getProtectedAuthorState } from '@/lib/server/author-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,11 +22,15 @@ export default async function DashboardPage({
 }: {
   searchParams: DashboardSearchParams;
 }) {
-  const [actor, resolvedSearchParams, { locale, dictionary }] = await Promise.all([getDemoAuthorActor(), searchParams, getLocaleContext()]);
+  const [authorState, resolvedSearchParams, { locale, dictionary }] = await Promise.all([
+    getProtectedAuthorState(),
+    searchParams,
+    getLocaleContext(),
+  ]);
   const notice = getValue(resolvedSearchParams.notice);
   const error = getValue(resolvedSearchParams.error);
 
-  if (!actor) {
+  if (authorState.status !== 'authenticated') {
     return (
       <PageShell
         eyebrow={dictionary.routes.items.dashboard.label}
@@ -36,20 +39,43 @@ export default async function DashboardPage({
         actions={<LocaleSwitcher locale={locale} nextPath="/dashboard" dictionary={dictionary} />}
       >
         <SectionCard title={dictionary.dashboardPage.signInTitle} eyebrow={dictionary.dashboardPage.signInEyebrow}>
-          <p className="text-sm text-muted-foreground">{dictionary.dashboardPage.guardedDescription}</p>
-          <form action={signInDemoAuthorAction} className="mt-4">
-            <input name="next" type="hidden" value="/dashboard" />
-            <Button className="h-10 rounded-full px-4" type="submit">
-              {dictionary.landing.continueAsDemoAuthor}
-            </Button>
-          </form>
+          {authorState.status === 'unauthenticated' ? (
+            <div className="mt-4">
+              <Button asChild className="h-10 rounded-full px-4">
+                <Link href={CLERK_SIGN_IN_PATH}>{dictionary.dashboardPage.signInTitle}</Link>
+              </Button>
+            </div>
+          ) : (
+            <div className="mt-4 space-y-2 text-sm text-muted-foreground">
+              <p>{authorState.message}</p>
+              {authorState.missingEnvKeys.length > 0 ? <p>Missing env: {authorState.missingEnvKeys.join(', ')}</p> : null}
+            </div>
+          )}
         </SectionCard>
       </PageShell>
     );
   }
 
-  const app = getDemoAppService();
-  const quizzes = app.listQuizSummaries(actor);
+  const actor = authorState.actor;
+  const readiness = getAppOperationalReadiness();
+
+  if (!readiness.canLoadAuthoring) {
+    return (
+      <PageShell
+        eyebrow={dictionary.routes.items.dashboard.label}
+        title={dictionary.dashboardPage.guardedTitle}
+        description={dictionary.dashboardPage.guardedDescription}
+        actions={<LocaleSwitcher locale={locale} nextPath="/dashboard" dictionary={dictionary} />}
+      >
+        <SectionCard title={dictionary.dashboardPage.errorTitle} eyebrow={dictionary.dashboardPage.errorEyebrow}>
+          <p className="text-sm text-muted-foreground">Missing env: {readiness.authoring.missingKeys.join(', ')}</p>
+        </SectionCard>
+      </PageShell>
+    );
+  }
+
+  const app = getAppService();
+  const quizzes = await app.listQuizSummaries(actor);
   const rooms = app.listActiveRooms(actor);
 
   return (
@@ -68,15 +94,16 @@ export default async function DashboardPage({
         </SectionCard>
       )}
 
+      {!readiness.canBootstrapRooms && (
+        <SectionCard title={dictionary.dashboardPage.errorTitle} eyebrow={dictionary.dashboardPage.errorEyebrow}>
+          <p className="text-sm text-muted-foreground">Missing env: {readiness.runtime.missing.join(', ')}</p>
+        </SectionCard>
+      )}
+
       <div className="flex flex-wrap gap-3">
         <Button asChild className="h-10 rounded-full px-4" variant="outline">
           <Link href="/authoring">{dictionary.dashboardPage.openAuthoring}</Link>
         </Button>
-        <form action={signOutDemoAuthorAction}>
-          <Button className="h-10 rounded-full px-4" type="submit" variant="outline">
-            {dictionary.landing.exitDemoAuthorSession}
-          </Button>
-        </form>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
@@ -98,7 +125,7 @@ export default async function DashboardPage({
             </dl>
             <div className="mt-4 flex flex-wrap gap-3">
               <Button asChild className="h-10 rounded-full px-4" variant="outline">
-                <Link href={`/authoring?quizId=${quiz.quiz_id}` as Route}>{dictionary.dashboardPage.editQuiz}</Link>
+                <Link href={`/authoring?quizId=${quiz.quiz_id}`}>{dictionary.dashboardPage.editQuiz}</Link>
               </Button>
               {quiz.status === 'draft' ? (
                 <form action={publishQuizAction}>
@@ -110,7 +137,7 @@ export default async function DashboardPage({
               ) : (
                 <form action={createRoomAction}>
                   <input name="quizId" type="hidden" value={quiz.quiz_id} />
-                  <Button className="h-10 rounded-full px-4" type="submit">
+                  <Button className="h-10 rounded-full px-4" disabled={!readiness.canBootstrapRooms} type="submit">
                     {dictionary.dashboardPage.createHostRoom}
                   </Button>
                 </form>
@@ -132,7 +159,7 @@ export default async function DashboardPage({
                   {room.joined_player_count}
                 </span>
                 <Button asChild className="h-auto px-0 text-sky-200" variant="link">
-                  <Link href={`/host?roomCode=${room.room_code}` as Route}>{dictionary.dashboardPage.openHostRoom}</Link>
+                  <Link href={`/host?roomCode=${room.room_code}`}>{dictionary.dashboardPage.openHostRoom}</Link>
                 </Button>
               </li>
             ))}
