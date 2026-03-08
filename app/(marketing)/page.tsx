@@ -89,9 +89,6 @@ export default async function LandingPage() {
             <Button asChild variant="outline" className="h-11 rounded-full border-border/70 bg-background/75 px-5">
               <Link href="/join">Open join flow</Link>
             </Button>
-            <Badge variant="outline" className="rounded-full border-secondary/30 bg-secondary/10 px-4 py-2 text-xs text-foreground">
-              {authorStatusLabel}
-            </Badge>
           </div>
           {authorState.status === 'setup-required' ? (
             <p className="text-sm leading-6 text-muted-foreground">

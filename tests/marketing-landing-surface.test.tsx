@@ -44,6 +44,7 @@ describe('marketing landing surface', () => {
     expect(html).toContain('Sign in with Clerk');
     expect(html).toContain('href="/sign-in"');
     expect(html).toContain('href="/join"');
+    expect(html).not.toContain('Protected author flow');
   });
 
   test('shows dashboard access for authenticated authors', async () => {
@@ -57,6 +58,23 @@ describe('marketing landing surface', () => {
 
     expect(html).toContain('Open dashboard');
     expect(html).toContain('href="/dashboard"');
+    expect(html).toContain('href="/join"');
+    expect(html).not.toContain('Author access ready');
+  });
+
+  test('shows setup guidance exactly once when author setup is required', async () => {
+    mockedAuthorState = {
+      status: 'setup-required',
+      message: 'Missing Clerk env.',
+      installCommand: 'bun add @clerk/nextjs',
+      missingEnvKeys: ['CLERK_SECRET_KEY'],
+    };
+
+    const { default: LandingPage } = await loadLandingPageModule();
+    const html = renderToStaticMarkup(await LandingPage());
+
+    expect((html.match(/Setup guidance/g) ?? [])).toHaveLength(1);
+    expect(html).toContain('Missing Clerk env. Missing env: CLERK_SECRET_KEY');
     expect(html).toContain('href="/join"');
   });
 });
