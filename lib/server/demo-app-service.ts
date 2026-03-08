@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { getPublicRuntimeConfig } from '@/lib/env/public';
 import type { AuthenticatedAuthor } from '@/lib/server/authoring-service';
 import { createAuthoringService } from '@/lib/server/authoring-service';
 import { createDemoSeedQuizDocuments } from '@/lib/server/demo-seed';
@@ -49,9 +50,12 @@ type GuestBinding = {
   roomId: string;
   roomCode: string;
   roomPlayerId: string;
-  resumeToken: string;
   resumeExpiresAt: string;
   resumeVersion: number;
+};
+
+type PlayerSessionBinding = GuestBinding & {
+  resumeToken: string;
 };
 
 type RoomSession = {
@@ -77,6 +81,41 @@ type DemoState = {
 
 type DemoAppServiceDependencies = {
   clock?: DemoClock;
+  logger?: DemoLifecycleLogger;
+};
+
+type DemoLifecycleLogPayload = {
+  event: 'demo.create_room' | 'demo.player_join' | 'demo.player_reconnect' | 'demo.room_lifecycle';
+  environment: ReturnType<typeof getPublicRuntimeConfig>['environment'];
+  deployment_id: string | null;
+  result: 'success' | 'error';
+  room_id?: string;
+  room_code?: string;
+  source_quiz_id?: string;
+  clerk_user_id?: string;
+  room_player_id?: string;
+  action?: HostAllowedAction;
+  lifecycle_state?: RuntimeRoom['lifecycle_state'];
+  previous_lifecycle_state?: RuntimeRoom['lifecycle_state'];
+  question_phase?: RuntimeQuestionState['phase'] | null;
+  previous_question_phase?: RuntimeQuestionState['phase'] | null;
+  resume_version?: number;
+  error_name?: string;
+  error_message?: string;
+};
+
+type DemoLifecycleLogger = {
+  info(payload: DemoLifecycleLogPayload): void;
+  error(payload: DemoLifecycleLogPayload): void;
+};
+
+const consoleDemoLifecycleLogger: DemoLifecycleLogger = {
+  info(payload) {
+    console.info(payload);
+  },
+  error(payload) {
+    console.error(payload);
+  },
 };
 
 function clone<T>(value: T): T {
@@ -114,9 +153,54 @@ function createInitialState(): DemoState {
   };
 }
 
-export function createDemoAppService({ clock = () => new Date() }: DemoAppServiceDependencies = {}) {
+function buildSessionLogContext(session: RoomSession | null | undefined) {
+  if (!session) {
+    return {};
+  }
+
+  return {
+    room_id: session.room.room_id,
+    room_code: session.room.room_code,
+    lifecycle_state: session.room.lifecycle_state,
+    question_phase: session.questionState?.phase ?? null,
+  };
+}
+
+function serializeErrorForLog(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      error_name: error.name,
+      error_message: error.message,
+    };
+  }
+
+  return {
+    error_name: 'UnknownError',
+    error_message: 'Unexpected non-error thrown',
+  };
+}
+
+export function createDemoAppService({ clock = () => new Date(), logger = consoleDemoLifecycleLogger }: DemoAppServiceDependencies = {}) {
   const state = createInitialState();
   const runtimeGameplayService = createRuntimeGameplayService({ clock });
+  const environment = getPublicRuntimeConfig().environment;
+  const deploymentId = process.env.VERCEL_DEPLOYMENT_ID ?? null;
+
+  function logInfo(payload: Omit<DemoLifecycleLogPayload, 'deployment_id' | 'environment'>) {
+    logger.info({
+      ...payload,
+      environment,
+      deployment_id: deploymentId,
+    });
+  }
+
+  function logError(payload: Omit<DemoLifecycleLogPayload, 'deployment_id' | 'environment'>) {
+    logger.error({
+      ...payload,
+      environment,
+      deployment_id: deploymentId,
+    });
+  }
 
   const authoringService = createAuthoringService({
     clock,
@@ -254,14 +338,20 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
       .sort((left, right) => left.display_position - right.display_position);
   }
 
-  function createGuestBinding(session: RoomSession, player: RuntimeRoomPlayer, resumeToken: string): GuestBinding {
+  function createGuestBinding(session: RoomSession, player: RuntimeRoomPlayer): GuestBinding {
     return {
       roomId: session.room.room_id,
       roomCode: session.room.room_code,
       roomPlayerId: player.room_player_id,
-      resumeToken,
       resumeExpiresAt: player.resume_expires_at,
       resumeVersion: player.resume_version,
+    };
+  }
+
+  function createPlayerSessionBinding(binding: GuestBinding, resumeToken: string): PlayerSessionBinding {
+    return {
+      ...binding,
+      resumeToken,
     };
   }
 
@@ -394,9 +484,28 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
     },
 
     async createRoom({ actor, quizId }: { actor: AuthenticatedAuthor; quizId: string }) {
-      const bootstrap = await roomBootstrapService.createRoom({ actor, quizId });
-      mustRoomSession(bootstrap.room_code).bootstrap = bootstrap;
-      return bootstrap;
+      try {
+        const bootstrap = await roomBootstrapService.createRoom({ actor, quizId });
+        const session = mustRoomSession(bootstrap.room_code);
+        session.bootstrap = bootstrap;
+        logInfo({
+          event: 'demo.create_room',
+          result: 'success',
+          clerk_user_id: actor.clerkUserId,
+          source_quiz_id: bootstrap.source_quiz_id,
+          ...buildSessionLogContext(session),
+        });
+        return bootstrap;
+      } catch (error) {
+        logError({
+          event: 'demo.create_room',
+          result: 'error',
+          clerk_user_id: actor.clerkUserId,
+          source_quiz_id: quizId,
+          ...serializeErrorForLog(error),
+        });
+        throw error;
+      }
     },
 
     findHostRoomDetails({ actor, roomCode }: { actor: AuthenticatedAuthor; roomCode: string }) {
@@ -434,142 +543,218 @@ export function createDemoAppService({ clock = () => new Date() }: DemoAppServic
     },
 
     performHostAction(input: { actor: AuthenticatedAuthor; roomCode: string; action: HostAllowedAction }) {
-      const session = mustRoomSession(input.roomCode);
-      requireRoomHost(session, input.actor);
-      switch (input.action) {
-        case 'start_game': {
-          const quiz = mustQuizDocument(session.room.source_quiz_id);
-          const questionSnapshots = buildQuestionSnapshots(session.room.room_id, quiz);
-          const optionSnapshots = buildOptionSnapshots(session.room.room_id, quiz);
-          const started = runtimeGameplayService.startGame({ room: session.room, questionSnapshots });
-          session.room = started.room;
-          session.questionSnapshots = questionSnapshots;
-          session.optionSnapshots = optionSnapshots;
-          session.questionState = started.questionState;
-          session.acceptedSubmissions = [];
-          session.latestOutcomes = {};
-          session.leaderboard = null;
-          break;
-        }
-        case 'close_question':
-          if (!session.questionState) {
-            throw new InvalidOperationError('No active question is available to close');
-          }
-          session.questionState = runtimeGameplayService.closeQuestion({ room: session.room, questionState: session.questionState });
-          break;
-        case 'reveal': {
-          const question = getCurrentQuestionSnapshot(session);
-          if (!session.questionState || !question) {
-            throw new InvalidOperationError('No closed question is available to reveal');
-          }
-          const finalized = runtimeGameplayService.finalizeQuestion({
-            room: session.room,
-            questionSnapshot: question,
-            optionSnapshots: getCurrentOptionSnapshots(session),
-            questionState: session.questionState,
-            players: session.players,
-            acceptedSubmissions: session.acceptedSubmissions,
-          });
-          session.players = finalized.updatedPlayers;
-          session.leaderboard = finalized.leaderboard;
-          session.latestOutcomes = Object.fromEntries(
-            finalized.submissionRecords.map((record) => [
-              record.room_player_id,
-              { is_correct: record.is_correct, awarded_points: record.awarded_points },
-            ]),
-          );
-          session.questionState = runtimeGameplayService.revealQuestion({ room: session.room, questionState: session.questionState });
-          break;
-        }
-        case 'show_leaderboard':
-          if (!session.questionState) {
-            throw new InvalidOperationError('No revealed question is available for leaderboard display');
-          }
-          session.questionState = runtimeGameplayService.showLeaderboard({ room: session.room, questionState: session.questionState });
-          break;
-        case 'next_question':
-        case 'finish_game': {
-          if (!session.questionState) {
-            throw new InvalidOperationError('No leaderboard state is active');
-          }
-          const advanced = runtimeGameplayService.advanceAfterLeaderboard({
-            room: session.room,
-            questionState: session.questionState,
-            questionSnapshots: getQuestionSnapshotsForRoom(session),
-          });
-          if (input.action === 'finish_game' && advanced.questionState) {
-            throw new InvalidOperationError('More questions remain before the game can finish');
-          }
-          session.room = advanced.room;
-          session.questionState = advanced.questionState;
-          session.acceptedSubmissions = [];
-          if (advanced.questionState) {
+      let session: RoomSession | null = null;
+      let previousLifecycleState: RuntimeRoom['lifecycle_state'] | undefined;
+      let previousQuestionPhase: RuntimeQuestionState['phase'] | null | undefined;
+
+      try {
+        session = mustRoomSession(input.roomCode);
+        requireRoomHost(session, input.actor);
+        previousLifecycleState = session.room.lifecycle_state;
+        previousQuestionPhase = session.questionState?.phase ?? null;
+
+        switch (input.action) {
+          case 'start_game': {
+            const quiz = mustQuizDocument(session.room.source_quiz_id);
+            const questionSnapshots = buildQuestionSnapshots(session.room.room_id, quiz);
+            const optionSnapshots = buildOptionSnapshots(session.room.room_id, quiz);
+            const started = runtimeGameplayService.startGame({ room: session.room, questionSnapshots });
+            session.room = started.room;
+            session.questionSnapshots = questionSnapshots;
+            session.optionSnapshots = optionSnapshots;
+            session.questionState = started.questionState;
+            session.acceptedSubmissions = [];
             session.latestOutcomes = {};
             session.leaderboard = null;
+            break;
           }
-          break;
+          case 'close_question':
+            if (!session.questionState) {
+              throw new InvalidOperationError('No active question is available to close');
+            }
+            session.questionState = runtimeGameplayService.closeQuestion({ room: session.room, questionState: session.questionState });
+            break;
+          case 'reveal': {
+            const question = getCurrentQuestionSnapshot(session);
+            if (!session.questionState || !question) {
+              throw new InvalidOperationError('No closed question is available to reveal');
+            }
+            const finalized = runtimeGameplayService.finalizeQuestion({
+              room: session.room,
+              questionSnapshot: question,
+              optionSnapshots: getCurrentOptionSnapshots(session),
+              questionState: session.questionState,
+              players: session.players,
+              acceptedSubmissions: session.acceptedSubmissions,
+            });
+            session.players = finalized.updatedPlayers;
+            session.leaderboard = finalized.leaderboard;
+            session.latestOutcomes = Object.fromEntries(
+              finalized.submissionRecords.map((record) => [
+                record.room_player_id,
+                { is_correct: record.is_correct, awarded_points: record.awarded_points },
+              ]),
+            );
+            session.questionState = runtimeGameplayService.revealQuestion({ room: session.room, questionState: session.questionState });
+            break;
+          }
+          case 'show_leaderboard':
+            if (!session.questionState) {
+              throw new InvalidOperationError('No revealed question is available for leaderboard display');
+            }
+            session.questionState = runtimeGameplayService.showLeaderboard({ room: session.room, questionState: session.questionState });
+            break;
+          case 'next_question':
+          case 'finish_game': {
+            if (!session.questionState) {
+              throw new InvalidOperationError('No leaderboard state is active');
+            }
+            const advanced = runtimeGameplayService.advanceAfterLeaderboard({
+              room: session.room,
+              questionState: session.questionState,
+              questionSnapshots: getQuestionSnapshotsForRoom(session),
+            });
+            if (input.action === 'finish_game' && advanced.questionState) {
+              throw new InvalidOperationError('More questions remain before the game can finish');
+            }
+            session.room = advanced.room;
+            session.questionState = advanced.questionState;
+            session.acceptedSubmissions = [];
+            if (advanced.questionState) {
+              session.latestOutcomes = {};
+              session.leaderboard = null;
+            }
+            break;
+          }
+          case 'abort_game': {
+            session.room = runtimeGameplayService.abortGame({ room: session.room });
+            session.questionState = null;
+            session.acceptedSubmissions = [];
+            session.leaderboard = null;
+            break;
+          }
         }
-        case 'abort_game': {
-          session.room = runtimeGameplayService.abortGame({ room: session.room });
-          session.questionState = null;
-          session.acceptedSubmissions = [];
-          session.leaderboard = null;
-          break;
-        }
+
+        logInfo({
+          event: 'demo.room_lifecycle',
+          result: 'success',
+          action: input.action,
+          clerk_user_id: input.actor.clerkUserId,
+          previous_lifecycle_state: previousLifecycleState,
+          previous_question_phase: previousQuestionPhase,
+          ...buildSessionLogContext(session),
+        });
+        return this.getHostRoomState({ actor: input.actor, roomCode: input.roomCode });
+      } catch (error) {
+        logError({
+          event: 'demo.room_lifecycle',
+          result: 'error',
+          action: input.action,
+          clerk_user_id: input.actor.clerkUserId,
+          room_code: normalizeRoomCode(input.roomCode),
+          previous_lifecycle_state: previousLifecycleState,
+          previous_question_phase: previousQuestionPhase,
+          ...buildSessionLogContext(session),
+          ...serializeErrorForLog(error),
+        });
+        throw error;
       }
-      return this.getHostRoomState({ actor: input.actor, roomCode: input.roomCode });
     },
 
-    joinRoom(input: { guestSessionId: string; roomCode: string; displayName: string }) {
-      const command = playerJoinCommandSchema.parse({ room_code: input.roomCode, display_name: input.displayName });
-      const normalizedRoomCode = normalizeRoomCode(command.room_code);
-      const existingBinding = getGuestBinding(input.guestSessionId, normalizedRoomCode);
-      if (existingBinding) {
-        return existingBinding;
+    joinRoom(input: { guestSessionId: string; roomCode: string; displayName: string }): PlayerSessionBinding {
+      let session: RoomSession | null = null;
+
+      try {
+        const command = playerJoinCommandSchema.parse({ room_code: input.roomCode, display_name: input.displayName });
+        const normalizedRoomCode = normalizeRoomCode(command.room_code);
+        const existingBinding = getGuestBinding(input.guestSessionId, normalizedRoomCode);
+        if (existingBinding) {
+          throw new InvalidOperationError('Room already joined in this guest session');
+        }
+        session = mustRoomSession(normalizedRoomCode);
+        const roomPlayerId = `player-${state.nextPlayerNumber}`;
+        const resumeToken = generateResumeToken();
+        const joinedPlayer = runtimeGameplayService.joinPlayer({
+          room: session.room,
+          players: session.players,
+          roomPlayerId,
+          displayName: command.display_name,
+          resumeTokenHash: hashResumeToken(resumeToken),
+        });
+        session.players = [...session.players, joinedPlayer];
+        state.nextPlayerNumber += 1;
+        const binding = createGuestBinding(session, joinedPlayer);
+        setGuestBinding(input.guestSessionId, binding);
+        logInfo({
+          event: 'demo.player_join',
+          result: 'success',
+          room_player_id: binding.roomPlayerId,
+          resume_version: binding.resumeVersion,
+          ...buildSessionLogContext(session),
+        });
+        return createPlayerSessionBinding(binding, resumeToken);
+      } catch (error) {
+        logError({
+          event: 'demo.player_join',
+          result: 'error',
+          room_code: normalizeRoomCode(input.roomCode),
+          ...buildSessionLogContext(session),
+          ...serializeErrorForLog(error),
+        });
+        throw error;
       }
-      const session = mustRoomSession(normalizedRoomCode);
-      const roomPlayerId = `player-${state.nextPlayerNumber}`;
-      const resumeToken = generateResumeToken();
-      const joinedPlayer = runtimeGameplayService.joinPlayer({
-        room: session.room,
-        players: session.players,
-        roomPlayerId,
-        displayName: command.display_name,
-        resumeTokenHash: hashResumeToken(resumeToken),
-      });
-      session.players = [...session.players, joinedPlayer];
-      state.nextPlayerNumber += 1;
-      const binding = createGuestBinding(session, joinedPlayer, resumeToken);
-      setGuestBinding(input.guestSessionId, binding);
-      return binding;
     },
 
-    reconnectPlayer(input: { guestSessionId: string; roomId: string; roomPlayerId: string; resumeToken: string }) {
-      const command = playerReconnectCommandSchema.parse({
-        room_id: input.roomId,
-        room_player_id: input.roomPlayerId,
-        resume_token: input.resumeToken,
-      });
-      const session = mustRoomSessionById(command.room_id);
-      assertRoomStillReadable(session);
-      const playerIndex = session.players.findIndex((entry) => entry.room_player_id === command.room_player_id);
-      if (playerIndex === -1) {
-        throw new NotFoundError(`Player ${command.room_player_id} was not found in room ${command.room_id}`);
+    reconnectPlayer(input: { guestSessionId: string; roomId: string; roomPlayerId: string; resumeToken: string }): PlayerSessionBinding {
+      let session: RoomSession | null = null;
+      let existingPlayer: RuntimeRoomPlayer | null = null;
+
+      try {
+        const command = playerReconnectCommandSchema.parse({
+          room_id: input.roomId,
+          room_player_id: input.roomPlayerId,
+          resume_token: input.resumeToken,
+        });
+        session = mustRoomSessionById(command.room_id);
+        assertRoomStillReadable(session);
+        const playerIndex = session.players.findIndex((entry) => entry.room_player_id === command.room_player_id);
+        if (playerIndex === -1) {
+          throw new NotFoundError(`Player ${command.room_player_id} was not found in room ${command.room_id}`);
+        }
+
+        existingPlayer = session.players[playerIndex];
+        const nextResumeToken = generateResumeToken();
+        const updatedPlayer = runtimeGameplayService.reconnectPlayer({
+          room: session.room,
+          player: existingPlayer,
+          command,
+          presentedResumeTokenHash: hashResumeToken(command.resume_token),
+          nextResumeTokenHash: hashResumeToken(nextResumeToken),
+        });
+
+        session.players = session.players.map((player, index) => (index === playerIndex ? updatedPlayer : player));
+        const binding = createGuestBinding(session, updatedPlayer);
+        setGuestBinding(input.guestSessionId, binding);
+        logInfo({
+          event: 'demo.player_reconnect',
+          result: 'success',
+          room_player_id: binding.roomPlayerId,
+          resume_version: binding.resumeVersion,
+          ...buildSessionLogContext(session),
+        });
+        return createPlayerSessionBinding(binding, nextResumeToken);
+      } catch (error) {
+        logError({
+          event: 'demo.player_reconnect',
+          result: 'error',
+          room_id: input.roomId,
+          room_player_id: input.roomPlayerId,
+          resume_version: existingPlayer?.resume_version,
+          ...buildSessionLogContext(session),
+          ...serializeErrorForLog(error),
+        });
+        throw error;
       }
-
-      const nextResumeToken = generateResumeToken();
-      const updatedPlayer = runtimeGameplayService.reconnectPlayer({
-        room: session.room,
-        player: session.players[playerIndex],
-        command,
-        presentedResumeTokenHash: hashResumeToken(command.resume_token),
-        nextResumeTokenHash: hashResumeToken(nextResumeToken),
-      });
-
-      session.players = session.players.map((player, index) => (index === playerIndex ? updatedPlayer : player));
-      const binding = createGuestBinding(session, updatedPlayer, nextResumeToken);
-      setGuestBinding(input.guestSessionId, binding);
-      return binding;
     },
 
     findPlayerRoomState(input: { guestSessionId: string; roomCode: string }) {

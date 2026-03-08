@@ -304,6 +304,177 @@ describe('initial application flow smoke', () => {
     expect((replayError as Error).message).toBe('stale_resume_token');
   });
 
+  test('emits minimum structured lifecycle logs without raw secrets', async () => {
+    let currentTime = new Date('2026-03-06T12:05:00.000Z');
+    const logs: Array<{ level: 'info' | 'error'; payload: Record<string, unknown> }> = [];
+    const app = createDemoAppService({
+      clock: () => currentTime,
+      logger: {
+        info(payload) {
+          logs.push({ level: 'info', payload: { ...payload } });
+        },
+        error(payload) {
+          logs.push({ level: 'error', payload: { ...payload } });
+        },
+      },
+    });
+
+    const publishedQuiz = app.listQuizSummaries(demoAuthorActor).find((quiz) => quiz.status === 'published');
+
+    expect(publishedQuiz).toBeDefined();
+
+    const room = await app.createRoom({
+      actor: demoAuthorActor,
+      quizId: publishedQuiz!.quiz_id,
+    });
+
+    const joined = app.joinRoom({
+      guestSessionId: 'guest-log-1',
+      roomCode: room.room_code,
+      displayName: 'Player Logger',
+    });
+
+    app.performHostAction({
+      actor: demoAuthorActor,
+      roomCode: room.room_code,
+      action: 'start_game',
+    });
+
+    currentTime = new Date('2026-03-06T12:05:10.000Z');
+
+    const reconnected = app.reconnectPlayer({
+      guestSessionId: 'guest-log-2',
+      roomId: room.room_id,
+      roomPlayerId: joined.roomPlayerId,
+      resumeToken: joined.resumeToken,
+    });
+
+    let replayError: unknown;
+    try {
+      app.reconnectPlayer({
+        guestSessionId: 'guest-log-3',
+        roomId: room.room_id,
+        roomPlayerId: joined.roomPlayerId,
+        resumeToken: joined.resumeToken,
+      });
+    } catch (error) {
+      replayError = error;
+    }
+
+    expect(replayError).toBeInstanceOf(InvalidOperationError);
+
+    app.performHostAction({
+      actor: demoAuthorActor,
+      roomCode: room.room_code,
+      action: 'abort_game',
+    });
+
+    function findLog(event: string, level: 'info' | 'error', action?: string) {
+      return logs.find(
+        (entry) =>
+          entry.level === level &&
+          entry.payload.event === event &&
+          (action === undefined || entry.payload.action === action),
+      );
+    }
+
+    expect(findLog('demo.create_room', 'info')?.payload).toMatchObject({
+      event: 'demo.create_room',
+      environment: 'local',
+      deployment_id: null,
+      result: 'success',
+      room_id: room.room_id,
+      room_code: room.room_code,
+      source_quiz_id: publishedQuiz!.quiz_id,
+      clerk_user_id: demoAuthorActor.clerkUserId,
+      lifecycle_state: 'lobby',
+    });
+    expect(findLog('demo.player_join', 'info')?.payload).toMatchObject({
+      event: 'demo.player_join',
+      result: 'success',
+      room_id: room.room_id,
+      room_code: room.room_code,
+      room_player_id: joined.roomPlayerId,
+      lifecycle_state: 'lobby',
+      resume_version: 1,
+    });
+    expect(findLog('demo.room_lifecycle', 'info', 'start_game')?.payload).toMatchObject({
+      event: 'demo.room_lifecycle',
+      result: 'success',
+      action: 'start_game',
+      room_id: room.room_id,
+      room_code: room.room_code,
+      previous_lifecycle_state: 'lobby',
+      lifecycle_state: 'in_progress',
+      previous_question_phase: null,
+      question_phase: 'question_open',
+    });
+    expect(findLog('demo.player_reconnect', 'info')?.payload).toMatchObject({
+      event: 'demo.player_reconnect',
+      result: 'success',
+      room_id: room.room_id,
+      room_code: room.room_code,
+      room_player_id: joined.roomPlayerId,
+      lifecycle_state: 'in_progress',
+      resume_version: 2,
+    });
+    expect(findLog('demo.player_reconnect', 'error')?.payload).toMatchObject({
+      event: 'demo.player_reconnect',
+      result: 'error',
+      room_id: room.room_id,
+      room_code: room.room_code,
+      room_player_id: joined.roomPlayerId,
+      error_name: 'InvalidOperationError',
+      error_message: 'stale_resume_token',
+    });
+    expect(findLog('demo.room_lifecycle', 'info', 'abort_game')?.payload).toMatchObject({
+      event: 'demo.room_lifecycle',
+      result: 'success',
+      action: 'abort_game',
+      previous_lifecycle_state: 'in_progress',
+      lifecycle_state: 'aborted',
+      room_id: room.room_id,
+      room_code: room.room_code,
+    });
+
+    const serializedLogs = logs.map((entry) => JSON.stringify(entry.payload));
+
+    expect(serializedLogs.some((entry) => entry.includes(joined.resumeToken))).toBe(false);
+    expect(serializedLogs.some((entry) => entry.includes(reconnected.resumeToken))).toBe(false);
+    expect(serializedLogs.some((entry) => entry.includes(room.host_claim_token))).toBe(false);
+  });
+
+  test('rejects duplicate join attempts from the same guest session instead of replaying a stored secret', async () => {
+    const app = createDemoAppService({
+      clock: () => new Date('2026-03-06T12:05:00.000Z'),
+    });
+
+    const publishedQuiz = app.listQuizSummaries(demoAuthorActor).find((quiz) => quiz.status === 'published');
+
+    expect(publishedQuiz).toBeDefined();
+
+    const room = await app.createRoom({
+      actor: demoAuthorActor,
+      quizId: publishedQuiz!.quiz_id,
+    });
+
+    const joined = app.joinRoom({
+      guestSessionId: 'guest-repeat',
+      roomCode: room.room_code,
+      displayName: 'Player Repeat',
+    });
+
+    expect(joined.resumeToken.length).toBeGreaterThan(20);
+
+    expect(() =>
+      app.joinRoom({
+        guestSessionId: 'guest-repeat',
+        roomCode: room.room_code,
+        displayName: 'Player Repeat',
+      }),
+    ).toThrow(InvalidOperationError);
+  });
+
   test('allows hosts to abort from lobby or gameplay and leaves the room read-only', async () => {
     const app = createDemoAppService({
       clock: () => new Date('2026-03-06T12:05:00.000Z'),
