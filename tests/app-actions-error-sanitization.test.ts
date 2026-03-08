@@ -8,6 +8,8 @@ class RedirectSignal extends Error {
   }
 }
 
+const actionsModulePath = require.resolve('../app/actions.ts');
+
 function mockLocaleCookie(locale?: string) {
   mock.module('next/headers', () => ({
     cookies: async () => ({
@@ -35,6 +37,11 @@ async function expectRedirect(action: Promise<unknown>) {
   }
 
   throw new Error('Expected the action to redirect.');
+}
+
+function loadActionsModule() {
+  delete require.cache[actionsModulePath];
+  return require(actionsModulePath) as typeof import('@/app/actions');
 }
 
 afterEach(() => {
@@ -75,11 +82,15 @@ describe('server action client-facing errors', () => {
     mockLocaleCookie();
     mockRedirects();
     mock.module('@/lib/server/author-auth', () => ({
+      CLERK_SIGN_IN_PATH: '/sign-in',
+      getProtectedAuthorActor: async () => ({ clerkUserId: 'user-1', clerkSessionId: 'session-1' }),
+      getProtectedAuthorState: async () => ({ status: 'authenticated', actor: { clerkUserId: 'user-1', clerkSessionId: 'session-1' } }),
       requireProtectedAuthorActor: async () => ({ clerkUserId: 'user-1', clerkSessionId: 'session-1' }),
     }));
     mock.module('@/lib/server/demo-session', () => ({
       ensureDemoHostSessionId: async () => 'host-1',
       ensureDemoGuestSessionId: async () => 'guest-1',
+      getDemoGuestSessionId: async () => 'guest-1',
       getDemoPlayerBinding: async () => null,
       setDemoPlayerBinding: async () => {},
       clearDemoPlayerBinding: async () => {},
@@ -97,7 +108,7 @@ describe('server action client-facing errors', () => {
       }),
     }));
 
-    const { createRoomAction } = await import('@/app/actions');
+    const { createRoomAction } = loadActionsModule();
     const formData = new FormData();
     formData.set('quizId', 'quiz-1');
 
@@ -113,11 +124,15 @@ describe('server action client-facing errors', () => {
     mockLocaleCookie('en');
     mockRedirects();
     mock.module('@/lib/server/author-auth', () => ({
+      CLERK_SIGN_IN_PATH: '/sign-in',
+      getProtectedAuthorActor: async () => ({ clerkUserId: 'user-1', clerkSessionId: 'session-1' }),
+      getProtectedAuthorState: async () => ({ status: 'authenticated', actor: { clerkUserId: 'user-1', clerkSessionId: 'session-1' } }),
       requireProtectedAuthorActor: async () => ({ clerkUserId: 'user-1', clerkSessionId: 'session-1' }),
     }));
     mock.module('@/lib/server/demo-session', () => ({
       ensureDemoHostSessionId: async () => 'host-1',
       ensureDemoGuestSessionId: async () => 'guest-1',
+      getDemoGuestSessionId: async () => 'guest-1',
       getDemoPlayerBinding: async () => null,
       setDemoPlayerBinding: async () => {},
       clearDemoPlayerBinding: async () => {},
@@ -135,7 +150,7 @@ describe('server action client-facing errors', () => {
       }),
     }));
 
-    const { createRoomAction } = await import('@/app/actions');
+    const { createRoomAction } = loadActionsModule();
     const formData = new FormData();
     formData.set('quizId', 'quiz-1');
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test';
-import { NotFoundError } from '@/lib/server/service-errors';
+import { AuthorizationError, NotFoundError } from '@/lib/server/service-errors';
 
 const PNG_BYTES = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
 
@@ -13,15 +13,20 @@ describe('quiz image routes', () => {
     let mode: 'success' | 'not-found' | 'backend-failure' = 'success';
     const calls: Array<{ quizId: string; objectKey: string }> = [];
 
-    mock.module('@/lib/server/demo-session', () => ({
-      ensureDemoGuestSessionId: async () => 'guest-1',
-      getDemoAuthorActor: async () => actor,
-      getDemoGuestSessionId: async () => null,
-      signInDemoAuthor: async () => {},
-      signOutDemoAuthor: async () => {},
+    mock.module('@/lib/server/author-auth', () => ({
+      CLERK_SIGN_IN_PATH: '/sign-in',
+      getProtectedAuthorActor: async () => actor,
+      getProtectedAuthorState: async () => (actor ? { status: 'authenticated', actor } : { status: 'unauthenticated' }),
+      requireProtectedAuthorActor: async () => {
+        if (!actor) {
+          throw new AuthorizationError('Please sign in to continue.');
+        }
+
+        return actor;
+      },
     }));
-    mock.module('@/lib/server/demo-app-service', () => ({
-      getDemoAppService: () => ({
+    mock.module('@/lib/server/app-service', () => ({
+      getAppService: () => ({
         readAuthoringQuizImageAsset: async ({ quizId, objectKey }: { quizId: string; objectKey: string }) => {
           calls.push({ quizId, objectKey });
           if (mode === 'not-found') {
@@ -89,15 +94,28 @@ describe('quiz image routes', () => {
     const hostCalls: Array<{ roomCode: string; objectKey: string }> = [];
     const playerCalls: Array<{ roomCode: string; objectKey: string }> = [];
 
-    mock.module('@/lib/server/demo-session', () => ({
-      ensureDemoGuestSessionId: async () => 'guest-1',
-      getDemoAuthorActor: async () => authorActor,
-      getDemoGuestSessionId: async () => guestSessionId,
-      signInDemoAuthor: async () => {},
-      signOutDemoAuthor: async () => {},
+    mock.module('@/lib/server/author-auth', () => ({
+      CLERK_SIGN_IN_PATH: '/sign-in',
+      getProtectedAuthorActor: async () => authorActor,
+      getProtectedAuthorState: async () => (authorActor ? { status: 'authenticated', actor: authorActor } : { status: 'unauthenticated' }),
+      requireProtectedAuthorActor: async () => {
+        if (!authorActor) {
+          throw new AuthorizationError('Please sign in to continue.');
+        }
+
+        return authorActor;
+      },
     }));
-    mock.module('@/lib/server/demo-app-service', () => ({
-      getDemoAppService: () => ({
+    mock.module('@/lib/server/demo-session', () => ({
+      clearDemoPlayerBinding: async () => {},
+      ensureDemoGuestSessionId: async () => 'guest-1',
+      ensureDemoHostSessionId: async () => 'host-1',
+      getDemoGuestSessionId: async () => guestSessionId,
+      getDemoPlayerBinding: async () => null,
+      setDemoPlayerBinding: async () => {},
+    }));
+    mock.module('@/lib/server/app-service', () => ({
+      getAppService: () => ({
         readHostRuntimeQuizImageAsset: ({ roomCode, objectKey }: { roomCode: string; objectKey: string }) => {
           hostCalls.push({ roomCode, objectKey });
           return { data: PNG_BYTES, bytes: PNG_BYTES.byteLength, content_type: 'image/png' };

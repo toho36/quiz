@@ -15,6 +15,12 @@ async function requestBodyText(init: RequestInit | undefined) {
   return new Response(init.body).text();
 }
 
+function withFetchPreconnect(impl: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>): typeof fetch {
+  return Object.assign(impl, {
+    preconnect: fetch.preconnect.bind(fetch),
+  });
+}
+
 describe('cloudflare r2 quiz image store', () => {
   test('signs put/get/list requests for the private quiz bucket', async () => {
     const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
@@ -34,10 +40,10 @@ describe('cloudflare r2 quiz image store', () => {
         secretAccessKey: 'secret-123',
         bucketName: 'quiz',
       },
-      fetchImpl: async (url, init) => {
+      fetchImpl: withFetchPreconnect(async (url, init) => {
         calls.push({ url: String(url), init });
         return responses.shift() ?? new Response(null, { status: 500 });
-      },
+      }),
       now: () => new Date('2026-03-08T12:00:00.000Z'),
     });
 
@@ -79,7 +85,7 @@ describe('cloudflare r2 quiz image store', () => {
         secretAccessKey: 'secret-123',
         bucketName: 'quiz',
       },
-      fetchImpl: async (url, init) => {
+      fetchImpl: withFetchPreconnect(async (url, init) => {
         calls.push({ url: String(url), init });
         switch (calls.length) {
           case 1:
@@ -99,7 +105,7 @@ describe('cloudflare r2 quiz image store', () => {
           default:
             return new Response(null, { status: 500 });
         }
-      },
+      }),
       now: () => new Date('2026-03-08T12:00:00.000Z'),
     });
 
@@ -131,7 +137,7 @@ describe('cloudflare r2 quiz image store', () => {
         secretAccessKey: 'secret-123',
         bucketName: 'quiz',
       },
-      fetchImpl: async (url, init) => {
+      fetchImpl: withFetchPreconnect(async (url, init) => {
         calls.push({ url: String(url), init });
         switch (calls.length) {
           case 1:
@@ -144,7 +150,7 @@ describe('cloudflare r2 quiz image store', () => {
           default:
             return new Response(null, { status: 500 });
         }
-      },
+      }),
       now: () => new Date('2026-03-08T12:00:00.000Z'),
     });
 
@@ -166,7 +172,7 @@ describe('cloudflare r2 quiz image store', () => {
         secretAccessKey: 'secret-123',
         bucketName: 'quiz',
       },
-      fetchImpl: async (url, init) => {
+      fetchImpl: withFetchPreconnect(async (url, init) => {
         calls.push({ url: String(url), init });
         switch (calls.length) {
           case 1:
@@ -179,7 +185,7 @@ describe('cloudflare r2 quiz image store', () => {
           default:
             return new Response(null, { status: 500 });
         }
-      },
+      }),
       now: () => new Date('2026-03-08T12:00:00.000Z'),
     });
 

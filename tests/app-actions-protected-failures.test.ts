@@ -104,6 +104,11 @@ function installSpacetimeDbMock() {
 function installMocks() {
   mock.module('server-only', () => ({}));
   installSpacetimeDbMock();
+  mock.module('next/headers', () => ({
+    cookies: async () => ({
+      get: () => undefined,
+    }),
+  }));
   mock.module('next/navigation', () => ({
     redirect(location: string) {
       throw new RedirectSignal(location);

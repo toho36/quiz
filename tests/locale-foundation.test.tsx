@@ -12,6 +12,13 @@ type TestElementProps = {
 };
 
 const MOCK_AUTHOR = { clerkUserId: 'user-1', clerkSessionId: 'session-1' };
+const ORIGINAL_APP_URL = process.env.NEXT_PUBLIC_APP_URL;
+const ORIGINAL_APP_ENV = process.env.NEXT_PUBLIC_APP_ENV;
+const joinPageModulePath = require.resolve('../app/(runtime)/join/page.tsx');
+const dashboardPageModulePath = require.resolve('../app/(workspace)/dashboard/page.tsx');
+const authoringPageModulePath = require.resolve('../app/(workspace)/authoring/page.tsx');
+const hostPageModulePath = require.resolve('../app/(runtime)/host/page.tsx');
+const playPageModulePath = require.resolve('../app/(runtime)/play/[roomCode]/page.tsx');
 
 function flattenElements(node: ReactNode): Array<React.ReactElement<TestElementProps>> {
   if (Array.isArray(node)) {
@@ -59,18 +66,38 @@ function mockServerOnly() {
 
 afterEach(() => {
   mock.restore();
+  process.env.NEXT_PUBLIC_APP_URL = ORIGINAL_APP_URL;
+  process.env.NEXT_PUBLIC_APP_ENV = ORIGINAL_APP_ENV;
 });
 
+function mockPublicRuntimeEnv() {
+  process.env.NEXT_PUBLIC_APP_URL = 'https://example.test';
+  process.env.NEXT_PUBLIC_APP_ENV = 'local';
+}
+
 function mockLocalizedPageModules() {
-  mock.module('@/lib/server/demo-session', () => ({
-    ensureDemoGuestSessionId: async () => 'guest-1',
-    getDemoAuthorActor: async () => MOCK_AUTHOR,
-    getDemoGuestSessionId: async () => 'guest-1',
-    signInDemoAuthor: async () => {},
-    signOutDemoAuthor: async () => {},
+  mock.module('@/lib/server/author-auth', () => ({
+    CLERK_SIGN_IN_PATH: '/sign-in',
+    getProtectedAuthorActor: async () => MOCK_AUTHOR,
+    getProtectedAuthorState: async () => ({ status: 'authenticated', actor: MOCK_AUTHOR }),
+    requireProtectedAuthorActor: async () => MOCK_AUTHOR,
   }));
-  mock.module('@/lib/server/demo-app-service', () => ({
-    getDemoAppService: () => ({
+  mock.module('@/lib/server/demo-session', () => ({
+    clearDemoPlayerBinding: async () => {},
+    ensureDemoGuestSessionId: async () => 'guest-1',
+    ensureDemoHostSessionId: async () => 'host-1',
+    getDemoGuestSessionId: async () => 'guest-1',
+    getDemoPlayerBinding: async () => null,
+    setDemoPlayerBinding: async () => {},
+  }));
+  mock.module('@/lib/server/app-service', () => ({
+    getAppOperationalReadiness: () => ({
+      canBootstrapRooms: true,
+      canLoadAuthoring: true,
+      authoring: { isConfigured: true, missingKeys: [] },
+      runtime: { canCreateRooms: true, canIssueHostClaims: true, missing: [] },
+    }),
+    getAppService: () => ({
       listQuizSummaries: () => [
         { quiz_id: 'quiz-1', title: 'Quiz 1', status: 'draft', question_count: 1, updated_at: '2026-03-06T12:00:00.000Z' },
       ],
@@ -214,6 +241,11 @@ function mockLocalizedPageModules() {
   }));
 }
 
+function loadModule<T>(modulePath: string): T {
+  delete require.cache[modulePath];
+  return require(modulePath) as T;
+}
+
 describe('locale foundation', () => {
   test('defaults to Czech and only honors supported English overrides', () => {
     expect(resolveLocale()).toBe('cs');
@@ -222,10 +254,12 @@ describe('locale foundation', () => {
   });
 
   test('join page renders Czech copy by default when no locale cookie is present', async () => {
+    mockPublicRuntimeEnv();
     mockLocaleCookie();
     mockServerOnly();
+    mockLocalizedPageModules();
 
-    const { default: JoinPage } = await import('@/app/(runtime)/join/page');
+    const { default: JoinPage } = loadModule<typeof import('@/app/(runtime)/join/page')>(joinPageModulePath);
     const page = await JoinPage({ searchParams: Promise.resolve({}) });
     expect(isValidElement(page)).toBe(true);
 
@@ -240,10 +274,12 @@ describe('locale foundation', () => {
   });
 
   test('join page renders English copy when the locale cookie requests en', async () => {
+    mockPublicRuntimeEnv();
     mockLocaleCookie('en');
     mockServerOnly();
+    mockLocalizedPageModules();
 
-    const { default: JoinPage } = await import('@/app/(runtime)/join/page');
+    const { default: JoinPage } = loadModule<typeof import('@/app/(runtime)/join/page')>(joinPageModulePath);
     const page = await JoinPage({ searchParams: Promise.resolve({}) });
     expect(isValidElement(page)).toBe(true);
 
@@ -258,10 +294,12 @@ describe('locale foundation', () => {
   });
 
   test('join page renders Czech error chrome by default', async () => {
+    mockPublicRuntimeEnv();
     mockLocaleCookie();
     mockServerOnly();
+    mockLocalizedPageModules();
 
-    const { default: JoinPage } = await import('@/app/(runtime)/join/page');
+    const { default: JoinPage } = loadModule<typeof import('@/app/(runtime)/join/page')>(joinPageModulePath);
     const page = await JoinPage({ searchParams: Promise.resolve({ roomCode: 'abcd12', error: 'Nepodařilo se připojit.' }) });
 
     const elements = flattenElements(page.props.children);
@@ -272,10 +310,12 @@ describe('locale foundation', () => {
   });
 
   test('join page renders English error chrome when the locale cookie requests en', async () => {
+    mockPublicRuntimeEnv();
     mockLocaleCookie('en');
     mockServerOnly();
+    mockLocalizedPageModules();
 
-    const { default: JoinPage } = await import('@/app/(runtime)/join/page');
+    const { default: JoinPage } = loadModule<typeof import('@/app/(runtime)/join/page')>(joinPageModulePath);
     const page = await JoinPage({ searchParams: Promise.resolve({ roomCode: 'abcd12', error: 'Could not join right now.' }) });
 
     const elements = flattenElements(page.props.children);
@@ -286,14 +326,15 @@ describe('locale foundation', () => {
   });
 
   test('dashboard, authoring, host, and play pages render Czech app-shell copy by default while keeping authored content unchanged', async () => {
+    mockPublicRuntimeEnv();
     mockLocaleCookie();
     mockServerOnly();
     mockLocalizedPageModules();
 
-    const { default: DashboardPage } = await import('@/app/(workspace)/dashboard/page');
-    const { default: AuthoringPage } = await import('@/app/(workspace)/authoring/page');
-    const { default: HostPage } = await import('@/app/(runtime)/host/page');
-    const { default: PlayPage } = await import('@/app/(runtime)/play/[roomCode]/page');
+    const { default: DashboardPage } = loadModule<typeof import('@/app/(workspace)/dashboard/page')>(dashboardPageModulePath);
+    const { default: AuthoringPage } = loadModule<typeof import('@/app/(workspace)/authoring/page')>(authoringPageModulePath);
+    const { default: HostPage } = loadModule<typeof import('@/app/(runtime)/host/page')>(hostPageModulePath);
+    const { default: PlayPage } = loadModule<typeof import('@/app/(runtime)/play/[roomCode]/page')>(playPageModulePath);
 
     const dashboard = await DashboardPage({ searchParams: Promise.resolve({}) });
     const authoring = await AuthoringPage({ searchParams: Promise.resolve({ quizId: 'quiz-1' }) });
@@ -312,7 +353,7 @@ describe('locale foundation', () => {
     expect(authoring.props.title).toBe('Autorský editor');
     expect(authoringText).toContain('Uložit koncept');
     expect(authoringText).toContain('Název');
-    expect(authoringText).toContain('Question with media');
+    expect(authoringText).toContain('Quiz 1');
 
     expect(host.props.title).toBe('Moderátorská místnost');
     expect(hostText).toContain('Zdrojový kvíz');
@@ -326,14 +367,15 @@ describe('locale foundation', () => {
   });
 
   test('dashboard, authoring, host, and play pages render English app-shell copy when the locale cookie requests en', async () => {
+    mockPublicRuntimeEnv();
     mockLocaleCookie('en');
     mockServerOnly();
     mockLocalizedPageModules();
 
-    const { default: DashboardPage } = await import('@/app/(workspace)/dashboard/page');
-    const { default: AuthoringPage } = await import('@/app/(workspace)/authoring/page');
-    const { default: HostPage } = await import('@/app/(runtime)/host/page');
-    const { default: PlayPage } = await import('@/app/(runtime)/play/[roomCode]/page');
+    const { default: DashboardPage } = loadModule<typeof import('@/app/(workspace)/dashboard/page')>(dashboardPageModulePath);
+    const { default: AuthoringPage } = loadModule<typeof import('@/app/(workspace)/authoring/page')>(authoringPageModulePath);
+    const { default: HostPage } = loadModule<typeof import('@/app/(runtime)/host/page')>(hostPageModulePath);
+    const { default: PlayPage } = loadModule<typeof import('@/app/(runtime)/play/[roomCode]/page')>(playPageModulePath);
 
     const dashboard = await DashboardPage({ searchParams: Promise.resolve({}) });
     const authoring = await AuthoringPage({ searchParams: Promise.resolve({ quizId: 'quiz-1' }) });
@@ -352,7 +394,7 @@ describe('locale foundation', () => {
     expect(authoring.props.title).toBe('Authoring workspace');
     expect(authoringText).toContain('Save draft');
     expect(authoringText).toContain('Title');
-    expect(authoringText).toContain('Question with media');
+    expect(authoringText).toContain('Quiz 1');
 
     expect(host.props.title).toBe('Host room');
     expect(hostText).toContain('Source quiz');
