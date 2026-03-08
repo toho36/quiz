@@ -5,44 +5,80 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: dark;
-  --background: 0.145 0 0;
-  --foreground: 0.985 0 0;
-  --card: 0.205 0 0;
-  --card-foreground: 0.985 0 0;
-  --popover: 0.205 0 0;
-  --popover-foreground: 0.985 0 0;
-  --primary: 0.87 0 0;
-  --primary-foreground: 0.205 0 0;
-  --secondary: 0.269 0 0;
-  --secondary-foreground: 0.985 0 0;
-  --muted: 0.269 0 0;
-  --muted-foreground: 0.708 0 0;
-  --accent: 0.371 0 0;
-  --accent-foreground: 0.985 0 0;
+  color-scheme: light;
+  --background: 0.98 0.012 85;
+  --foreground: 0.28 0.03 252;
+  --card: 0.995 0.006 85;
+  --card-foreground: 0.28 0.03 252;
+  --popover: 0.995 0.006 85;
+  --popover-foreground: 0.28 0.03 252;
+  --primary: 0.72 0.17 40;
+  --primary-foreground: 0.99 0.004 85;
+  --secondary: 0.84 0.1 190;
+  --secondary-foreground: 0.24 0.035 245;
+  --muted: 0.94 0.014 230;
+  --muted-foreground: 0.48 0.03 248;
+  --accent: 0.9 0.12 95;
+  --accent-foreground: 0.24 0.035 245;
   --destructive: 0.704 0.191 22.216;
-  --destructive-foreground: 0.985 0 0;
-  --border: 0.269 0 0;
-  --input: 0.269 0 0;
-  --ring: 0.556 0 0;
-  --chart-1: 0.809 0.105 251.813;
-  --chart-2: 0.623 0.214 259.815;
-  --chart-3: 0.546 0.245 262.881;
-  --chart-4: 0.488 0.243 264.376;
-  --chart-5: 0.424 0.199 265.638;
+  --destructive-foreground: 0.99 0.004 85;
+  --border: 0.88 0.022 240;
+  --input: 0.92 0.016 235;
+  --ring: 0.72 0.17 40;
+  --chart-1: 0.72 0.17 40;
+  --chart-2: 0.78 0.11 190;
+  --chart-3: 0.77 0.14 95;
+  --chart-4: 0.67 0.16 145;
+  --chart-5: 0.64 0.18 20;
   --radius: 0.625rem;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
-  --sidebar: 0.205 0 0;
-  --sidebar-foreground: 0.985 0 0;
-  --sidebar-primary: 0.488 0.243 264.376;
-  --sidebar-primary-foreground: 0.985 0 0;
-  --sidebar-accent: 0.269 0 0;
-  --sidebar-accent-foreground: 0.985 0 0;
-  --sidebar-border: 0.269 0 0;
-  --sidebar-ring: 0.556 0 0;
+  --sidebar: 0.97 0.01 85;
+  --sidebar-foreground: 0.28 0.03 252;
+  --sidebar-primary: 0.72 0.17 40;
+  --sidebar-primary-foreground: 0.99 0.004 85;
+  --sidebar-accent: 0.92 0.018 230;
+  --sidebar-accent-foreground: 0.28 0.03 252;
+  --sidebar-border: 0.88 0.022 240;
+  --sidebar-ring: 0.72 0.17 40;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: 0.19 0.025 250;
+  --foreground: 0.96 0.012 85;
+  --card: 0.25 0.03 248;
+  --card-foreground: 0.96 0.012 85;
+  --popover: 0.24 0.03 248;
+  --popover-foreground: 0.96 0.012 85;
+  --primary: 0.77 0.16 42;
+  --primary-foreground: 0.2 0.03 250;
+  --secondary: 0.8 0.1 190;
+  --secondary-foreground: 0.18 0.03 250;
+  --muted: 0.31 0.022 248;
+  --muted-foreground: 0.76 0.022 235;
+  --accent: 0.83 0.1 95;
+  --accent-foreground: 0.18 0.03 250;
+  --destructive: 0.67 0.2 24;
+  --destructive-foreground: 0.96 0.012 85;
+  --border: 0.36 0.025 245;
+  --input: 0.3 0.022 245;
+  --ring: 0.77 0.16 42;
+  --chart-1: 0.77 0.16 42;
+  --chart-2: 0.8 0.1 190;
+  --chart-3: 0.83 0.1 95;
+  --chart-4: 0.7 0.14 145;
+  --chart-5: 0.67 0.2 24;
+  --sidebar: 0.23 0.03 248;
+  --sidebar-foreground: 0.96 0.012 85;
+  --sidebar-primary: 0.77 0.16 42;
+  --sidebar-primary-foreground: 0.2 0.03 250;
+  --sidebar-accent: 0.3 0.022 245;
+  --sidebar-accent-foreground: 0.96 0.012 85;
+  --sidebar-border: 0.36 0.025 245;
+  --sidebar-ring: 0.77 0.16 42;
 }
 
 a {
@@ -53,13 +89,77 @@ a {
   .theme {
     --font-sans: var(--font-sans);
   }
+
   * {
     @apply border-border outline-ring/50;
   }
+
   body {
     @apply bg-background text-foreground antialiased;
   }
+
   html {
-    @apply font-sans;
+    @apply font-sans scroll-smooth;
+  }
+
+  ::selection {
+    background: oklch(var(--primary) / 0.22);
+    color: oklch(var(--foreground));
+  }
+}
+
+@layer components {
+  .app-shell {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    background:
+      radial-gradient(circle at top left, oklch(var(--primary) / 0.18), transparent 28%),
+      radial-gradient(circle at top right, oklch(var(--secondary) / 0.16), transparent 24%),
+      radial-gradient(circle at bottom center, oklch(var(--accent) / 0.14), transparent 30%),
+      linear-gradient(180deg, oklch(var(--background)), oklch(var(--background)));
+  }
+
+  .app-shell::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(oklch(var(--border) / 0.18) 1px, transparent 1px),
+      linear-gradient(90deg, oklch(var(--border) / 0.18) 1px, transparent 1px);
+    background-size: 72px 72px;
+    mask-image: radial-gradient(circle at top, black, transparent 78%);
+    opacity: 0.6;
+  }
+
+  .app-shell::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(180deg, transparent, oklch(var(--background) / 0.15));
+  }
+
+  .shell-panel {
+    @apply border border-border/60 bg-background/70 backdrop-blur-2xl;
+    box-shadow: 0 28px 90px -48px oklch(var(--primary) / 0.45);
+  }
+
+  .shell-card {
+    @apply border border-border/60 bg-card/80 backdrop-blur-2xl;
+    box-shadow: 0 28px 90px -48px oklch(var(--primary) / 0.45);
+  }
+
+  .shell-badge {
+    @apply rounded-full border px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.28em];
+    border-color: oklch(var(--primary) / 0.25);
+    background: linear-gradient(135deg, oklch(var(--primary) / 0.16), oklch(var(--secondary) / 0.12));
+    color: oklch(var(--foreground));
+  }
+
+  .shell-pill {
+    @apply text-foreground transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:bg-background/90 hover:text-foreground;
+    box-shadow: 0 12px 30px -24px oklch(var(--primary) / 0.55);
   }
 }

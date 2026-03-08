@@ -16,6 +16,7 @@ import {
 } from '@/components/protected-readiness-surfaces';
 import { PageShell } from '@/components/page-shell';
 import { SectionCard } from '@/components/section-card';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -84,31 +85,82 @@ export default async function AuthoringPage({
     <PageShell
       eyebrow="Authoring"
       title="Authoring workspace"
-      description="Edit quiz metadata plus question and option content through the server-owned authoring boundary."
+      description="Edit quiz metadata plus question and option content through the same server-owned authoring boundary, now framed like a brighter creative studio."
+      actions={
+        <div className="flex flex-wrap gap-3">
+          <Button asChild className="h-10 rounded-full px-4" variant="outline">
+            <Link href="/dashboard">Back to dashboard</Link>
+          </Button>
+          {document ? (
+            <Badge variant={document.quiz.status === 'draft' ? 'secondary' : 'outline'} className="rounded-full px-3 py-1">
+              {document.quiz.status}
+            </Badge>
+          ) : null}
+        </div>
+      }
+      aside={
+        <SectionCard
+          title="Workspace rhythm"
+          eyebrow="Current selection"
+          description={document ? 'Use this panel to keep the selected quiz status and question volume in view while editing.' : 'Choose a quiz to unlock the editing canvas.'}
+        >
+          {document ? (
+            <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
+              <div className="rounded-2xl border border-border/70 bg-background/50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground/80">Quiz</p>
+                <p className="mt-1 text-sm font-semibold text-foreground">{document.quiz.title}</p>
+              </div>
+              <div className="rounded-2xl border border-border/70 bg-background/50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground/80">Questions</p>
+                <p className="mt-1 text-2xl font-semibold text-foreground">{orderedQuestions.length}</p>
+              </div>
+              <div className="rounded-2xl border border-border/70 bg-background/50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground/80">Status</p>
+                <p className="mt-1 text-sm font-semibold text-foreground">{document.quiz.status}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-[1.5rem] border border-dashed border-border/80 bg-background/40 px-4 py-6 text-sm text-muted-foreground">
+              Return to the dashboard if you need to seed or select a different quiz first.
+            </div>
+          )}
+        </SectionCard>
+      }
     >
       {(notice || error) && (
-        <SectionCard title={error ? 'Save blocked' : 'Updated'} eyebrow={error ? 'Validation' : 'Server action'}>
+        <SectionCard
+          title={error ? 'Save blocked' : 'Updated'}
+          eyebrow={error ? 'Validation' : 'Server action'}
+          description="Authoring flows remain unchanged; this card only surfaces the latest validation or server-action result."
+        >
           <p className="text-sm text-muted-foreground">{error ?? notice}</p>
         </SectionCard>
       )}
 
-      <div className="flex flex-wrap gap-3">
-        {quizzes.map((quiz) => (
-          <Button
-            key={quiz.quiz_id}
-            asChild
-            className="rounded-full px-4"
-            variant={quiz.quiz_id === selectedQuizId ? 'default' : 'outline'}
-          >
-            <Link href={{ pathname: '/authoring', query: { quizId: quiz.quiz_id } }}>{quiz.title}</Link>
-          </Button>
-        ))}
-      </div>
+      <SectionCard title="Quiz switcher" eyebrow="Workspace lanes" description="Jump between available quiz documents without leaving the refreshed editing shell.">
+        <div className="flex flex-wrap gap-3">
+          {quizzes.map((quiz) => (
+            <Button
+              key={quiz.quiz_id}
+              asChild
+              className="rounded-full px-4"
+              variant={quiz.quiz_id === selectedQuizId ? 'default' : 'outline'}
+            >
+              <Link href={{ pathname: '/authoring', query: { quizId: quiz.quiz_id } }}>{quiz.title}</Link>
+            </Button>
+          ))}
+        </div>
+      </SectionCard>
 
       {document ? (
         <div className="grid gap-4">
           <div className="grid gap-4 xl:grid-cols-[1fr_0.9fr]">
-            <SectionCard title={document.quiz.title} eyebrow={`Quiz · ${document.quiz.status}`}>
+            <SectionCard
+              title={document.quiz.title}
+              eyebrow="Quiz details"
+              description="Update the quiz title and description before publishing or launching fresh host rooms from the dashboard."
+              action={<Badge variant={document.quiz.status === 'draft' ? 'secondary' : 'outline'} className="rounded-full px-3 py-1">{document.quiz.status}</Badge>}
+            >
               <form action={saveQuizDetailsAction} className="space-y-4">
                 <input name="quizId" type="hidden" value={document.quiz.quiz_id} />
                 <Label className="flex-col items-start gap-2 text-sm text-muted-foreground" htmlFor="quiz-title">
@@ -137,7 +189,12 @@ export default async function AuthoringPage({
               </form>
             </SectionCard>
 
-            <SectionCard title="Publish boundary" eyebrow="Runtime snapshot policy">
+            <SectionCard
+              title="Publish boundary"
+              eyebrow="Runtime snapshot policy"
+              description="Publishing freezes a snapshot for newly created rooms while future authoring edits keep moving independently."
+              action={<Badge variant="outline" className="rounded-full px-3 py-1">{orderedQuestions.length} questions</Badge>}
+            >
               <div className="space-y-3 text-sm text-muted-foreground">
                 <p>Authoring edits stay on the Next.js server boundary and must pass shared document validation.</p>
                 <p>Published quizzes remain editable for future rooms; existing room snapshots stay isolated from later authoring edits.</p>
@@ -149,20 +206,22 @@ export default async function AuthoringPage({
             </SectionCard>
           </div>
 
-          <SectionCard title="Questions" eyebrow="Editable authoring content">
+          <SectionCard
+            title="Question stack"
+            eyebrow="Editable authoring content"
+            description="Create, order, and refine question blocks while keeping the underlying authoring contract intact."
+            action={
+              <form action={addQuestionAction}>
+                <input name="quizId" type="hidden" value={document.quiz.quiz_id} />
+                <Button className="rounded-full px-4" disabled={orderedQuestions.length >= CONTRACT_LIMITS.publishedQuizQuestionCount.max} type="submit">
+                  Add question
+                </Button>
+              </form>
+            }
+          >
             <div className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <p className="text-sm text-muted-foreground">Create, edit, order, and validate questions/options without exposing live runtime state.</p>
-                <form action={addQuestionAction}>
-                  <input name="quizId" type="hidden" value={document.quiz.quiz_id} />
-                  <Button className="rounded-full px-4" disabled={orderedQuestions.length >= CONTRACT_LIMITS.publishedQuizQuestionCount.max} type="submit">
-                    Add question
-                  </Button>
-                </form>
-              </div>
-
               {orderedQuestions.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-border/80 px-4 py-6 text-sm text-muted-foreground">
+                <div className="rounded-[1.5rem] border border-dashed border-border/80 bg-background/40 px-4 py-6 text-sm text-muted-foreground">
                   Add a first question to start the quiz document.
                 </div>
               ) : (
@@ -176,21 +235,25 @@ export default async function AuthoringPage({
                     <form
                       key={entry.question.question_id}
                       action={saveQuestionAction}
-                      className="space-y-4 rounded-3xl border border-border/80 bg-background/40 p-4"
+                      className="space-y-5 rounded-[1.75rem] border border-border/80 bg-background/45 p-5 shadow-[0_20px_60px_-45px_oklch(var(--primary)/0.45)]"
                     >
                       <input name="quizId" type="hidden" value={document.quiz.quiz_id} />
                       <input name="questionId" type="hidden" value={entry.question.question_id} />
 
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div>
-                          <p className="text-sm font-medium text-foreground">Question {questionIndex + 1}</p>
-                          <p className="text-xs text-muted-foreground">{entry.question.question_type} · {orderedOptions.length} option(s)</p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant="outline" className="rounded-full px-3 py-1">Question {questionIndex + 1}</Badge>
+                            <Badge variant="secondary" className="rounded-full bg-secondary/15 px-3 py-1 text-secondary-foreground">{entry.question.question_type}</Badge>
+                          </div>
+                          <p className="mt-2 text-xs text-muted-foreground">{orderedOptions.length} option(s) currently configured.</p>
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          <Button formAction={moveQuestionAction} name="direction" value="up" variant="outline" disabled={questionIndex === 0}>
+                          <Button className="rounded-full px-4" formAction={moveQuestionAction} name="direction" value="up" variant="outline" disabled={questionIndex === 0}>
                             Move up
                           </Button>
                           <Button
+                            className="rounded-full px-4"
                             formAction={moveQuestionAction}
                             name="direction"
                             value="down"
@@ -199,7 +262,7 @@ export default async function AuthoringPage({
                           >
                             Move down
                           </Button>
-                          <Button formAction={deleteQuestionAction} type="submit" variant="outline" disabled={!canDeleteQuestion}>
+                          <Button className="rounded-full px-4" formAction={deleteQuestionAction} type="submit" variant="outline" disabled={!canDeleteQuestion}>
                             Delete question
                           </Button>
                         </div>
@@ -261,7 +324,7 @@ export default async function AuthoringPage({
                         </div>
 
                         {orderedOptions.map((option, optionIndex) => (
-                          <div key={option.option_id} className="space-y-3 rounded-2xl border border-border/70 bg-background/50 p-3">
+                          <div key={option.option_id} className="space-y-3 rounded-[1.5rem] border border-border/70 bg-background/55 p-4">
                             <input name="optionId" type="hidden" value={option.option_id} />
                             <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
                               <Label className="flex-col items-start gap-2 text-sm text-muted-foreground" htmlFor={`option-${option.option_id}`}>
@@ -279,10 +342,11 @@ export default async function AuthoringPage({
                               </Label>
                             </div>
                             <div className="flex flex-wrap gap-2">
-                              <Button formAction={moveOptionAction} name="optionMove" value={`${option.option_id}:up`} variant="outline" disabled={optionIndex === 0}>
+                              <Button className="rounded-full px-4" formAction={moveOptionAction} name="optionMove" value={`${option.option_id}:up`} variant="outline" disabled={optionIndex === 0}>
                                 Move up
                               </Button>
                               <Button
+                                className="rounded-full px-4"
                                 formAction={moveOptionAction}
                                 name="optionMove"
                                 value={`${option.option_id}:down`}
@@ -292,6 +356,7 @@ export default async function AuthoringPage({
                                 Move down
                               </Button>
                               <Button
+                                className="rounded-full px-4"
                                 formAction={deleteOptionAction}
                                 name="targetOptionId"
                                 value={option.option_id}
@@ -306,8 +371,8 @@ export default async function AuthoringPage({
                       </div>
 
                       <div className="flex flex-wrap gap-2">
-                        <Button type="submit">Save question</Button>
-                        <Button formAction={addOptionAction} type="submit" variant="outline">
+                        <Button className="rounded-full px-4" type="submit">Save question</Button>
+                        <Button className="rounded-full px-4" formAction={addOptionAction} type="submit" variant="outline">
                           Add option
                         </Button>
                       </div>
@@ -319,7 +384,7 @@ export default async function AuthoringPage({
           </SectionCard>
         </div>
       ) : (
-        <SectionCard title="No quiz available" eyebrow="Authoring">
+        <SectionCard title="No quiz available" eyebrow="Authoring" description="Return to the dashboard to choose a seeded quiz before editing.">
           <p className="text-sm text-muted-foreground">Return to the dashboard to choose a seeded quiz.</p>
         </SectionCard>
       )}
