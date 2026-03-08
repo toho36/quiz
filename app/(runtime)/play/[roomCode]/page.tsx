@@ -51,7 +51,7 @@ export default async function PlayPage({
           title={error ? dictionary.playPage.errorTitle : dictionary.playPage.updatedTitle}
           eyebrow={error ? dictionary.playPage.errorEyebrow : dictionary.playPage.updatedEyebrow}
         >
-          <p className="text-sm text-slate-300">{error ?? notice}</p>
+          <p className="text-sm text-muted-foreground">{error ?? notice}</p>
         </SectionCard>
       )}
 
@@ -59,46 +59,43 @@ export default async function PlayPage({
         <SectionCard title={dictionary.playPage.joinFirstTitle} eyebrow={dictionary.playPage.joinFirstEyebrow}>
           {storedBinding ? (
             <>
-              <p className="text-sm text-slate-300">
+              <p className="text-sm text-muted-foreground">
                 A stored player credential was found for {roomCode}. Reconnect to resume the same room-scoped player identity with a rotated token.
               </p>
               <form action={reconnectRoomAction} className="mt-4">
                 <input name="roomCode" type="hidden" value={roomCode} />
-                <button className="rounded-full bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950" type="submit">
+                <Button className="h-10 rounded-full px-4" type="submit">
                   Reconnect player session
-                </button>
+                </Button>
               </form>
             </>
           ) : (
             <>
-              <p className="text-sm text-slate-300">
+              <p className="text-sm text-muted-foreground">
                 No player session is bound to {roomCode} yet. Use the join flow to create a room-scoped player identity before playing.
               </p>
-              <Link
-                className="mt-4 inline-flex text-sm font-medium text-sky-300 hover:text-sky-200"
-                href={`/join?roomCode=${roomCode}`}
-              >
-                {dictionary.playPage.goToJoinFlow}
-              </Link>
+              <Button asChild className="mt-4 h-auto px-0 text-primary" variant="link">
+                <Link href={{ pathname: '/join', query: { roomCode } }}>{dictionary.playPage.goToJoinFlow}</Link>
+              </Button>
             </>
           )}
         </SectionCard>
       ) : (
         <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
           <SectionCard title={state.self.display_name} eyebrow={`${dictionary.appLabels.roomPrefix} · ${formatRoomLifecycle(dictionary, state.shared_room.lifecycle_state)}`}>
-            <dl className="space-y-3 text-sm text-slate-300">
+            <dl className="space-y-3 text-sm text-muted-foreground">
               <div>
-                <dt className="text-slate-500">{dictionary.appLabels.phaseLabel}</dt>
+                <dt className="text-muted-foreground/70">{dictionary.appLabels.phaseLabel}</dt>
                 <dd>{formatQuestionPhase(dictionary, state.shared_room.question_phase)}</dd>
               </div>
               <div>
-                <dt className="text-slate-500">{dictionary.appLabels.scoreLabel}</dt>
+                <dt className="text-muted-foreground/70">{dictionary.appLabels.scoreLabel}</dt>
                 <dd>
                   {state.self.score_total} {dictionary.appLabels.pointsSuffix} · {state.self.correct_count} {dictionary.appLabels.correctLabel}
                 </dd>
               </div>
               <div>
-                <dt className="text-slate-500">{dictionary.appLabels.submissionLabel}</dt>
+                <dt className="text-muted-foreground/70">{dictionary.appLabels.submissionLabel}</dt>
                 <dd>{formatPlayerSubmissionStatus(dictionary, state.self.submission_status)}</dd>
               </div>
             </dl>
@@ -107,7 +104,7 @@ export default async function PlayPage({
               <form action={submitAnswerAction} className="mt-4 space-y-3">
                 <input name="roomCode" type="hidden" value={roomCode} />
                 <div className="space-y-3">
-                  <p className="text-sm font-medium text-white">{state.active_question.prompt}</p>
+                  <p className="text-sm font-medium text-foreground">{state.active_question.prompt}</p>
                   {state.active_question.image && (
                     <img
                       alt={dictionary.playPage.questionImageAlt}
@@ -117,7 +114,7 @@ export default async function PlayPage({
                   )}
                 </div>
                 {state.active_question.display_options.map((option) => (
-                  <label key={option.option_id} className="flex gap-3 rounded-2xl border border-border px-4 py-3 text-sm text-slate-300">
+                  <label key={option.option_id} className="flex gap-3 rounded-2xl border border-border px-4 py-3 text-sm text-muted-foreground">
                     <input
                       name="selectedOptionIds"
                       type={state.active_question?.question_type === 'single_choice' ? 'radio' : 'checkbox'}
@@ -143,7 +140,7 @@ export default async function PlayPage({
               <div className="mt-4 space-y-3">
                 {state.active_question && (
                   <div className="space-y-3">
-                    <p className="text-sm font-medium text-white">{state.active_question.prompt}</p>
+                    <p className="text-sm font-medium text-foreground">{state.active_question.prompt}</p>
                     {state.active_question.image && (
                       <img
                         alt={dictionary.playPage.questionImageAlt}
@@ -154,8 +151,8 @@ export default async function PlayPage({
                     {state.active_question.display_options.length > 0 && (
                       <ul className="space-y-3">
                         {state.active_question.display_options.map((option) => (
-                          <li key={option.option_id} className="rounded-2xl border border-border px-4 py-3 text-sm text-slate-300">
-                            <p className="font-medium text-white">
+                          <li key={option.option_id} className="rounded-2xl border border-border px-4 py-3 text-sm text-muted-foreground">
+                            <p className="font-medium text-foreground">
                               {option.display_position}. {option.text}
                             </p>
                             {option.image && (
@@ -171,7 +168,7 @@ export default async function PlayPage({
                     )}
                   </div>
                 )}
-                <div className="rounded-2xl border border-border px-4 py-3 text-sm text-slate-300">
+                <div className="rounded-2xl border border-border px-4 py-3 text-sm text-muted-foreground">
                   {state.shared_room.lifecycle_state === 'lobby'
                     ? dictionary.playPage.waitingForHost
                     : state.self.latest_outcome
@@ -183,11 +180,11 @@ export default async function PlayPage({
           </SectionCard>
 
           <SectionCard title={dictionary.playPage.sharedStateTitle} eyebrow={dictionary.playPage.sharedStateEyebrow}>
-            <p className="text-sm text-slate-300">
+            <p className="text-sm text-muted-foreground">
               {dictionary.appLabels.currentQuestionLabel}: {state.active_question?.prompt ?? dictionary.playPage.noActiveQuestion}
             </p>
             {state.leaderboard && (
-              <ol className="mt-4 space-y-2 text-sm text-slate-300">
+              <ol className="mt-4 space-y-2 text-sm text-muted-foreground">
                 {state.leaderboard.map((entry) => (
                   <li key={entry.room_player_id}>
                     #{entry.rank} {entry.display_name} · {entry.score_total} {dictionary.appLabels.pointsSuffix}

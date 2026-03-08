@@ -57,7 +57,7 @@ export default async function LandingPage() {
         {appRoutes.map((route) => (
           <SectionCard key={route.href} title={route.label} eyebrow={getRouteSectionLabel(dictionary.routes, route.section)}>
             <p className="text-sm text-muted-foreground">{route.description}</p>
-            <Button asChild className="mt-4 h-auto px-0 text-sky-200" variant="link">
+            <Button asChild className="mt-4 h-auto px-0 text-primary" variant="link">
               <Link href={route.href}>{dictionary.landing.openRoute}</Link>
             </Button>
           </SectionCard>

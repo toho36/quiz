@@ -29,24 +29,24 @@ export default async function JoinPage({ searchParams }: { searchParams: JoinSea
     >
       {error && (
         <SectionCard title={dictionary.joinPage.errorTitle} eyebrow={dictionary.joinPage.errorEyebrow}>
-          <p className="text-sm text-slate-300">{error}</p>
+          <p className="text-sm text-muted-foreground">{error}</p>
         </SectionCard>
       )}
       <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
         <JoinRoomForm roomCode={roomCode} copy={dictionary.joinForm} />
         <SectionCard title={dictionary.joinPage.configTitle} eyebrow={dictionary.joinPage.configEyebrow}>
-          <dl className="space-y-3 text-sm text-slate-300">
-            <div>
-              <dt className="text-slate-500">{dictionary.joinPage.environmentLabel}</dt>
-              <dd>{config.environment}</dd>
+          <dl className="space-y-3 text-sm text-muted-foreground">
+            <div className="rounded-2xl border border-border/70 bg-background/50 px-4 py-3">
+              <dt className="text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground/80">{dictionary.joinPage.environmentLabel}</dt>
+              <dd className="mt-1 text-sm font-medium text-foreground">{config.environment}</dd>
             </div>
-            <div>
-              <dt className="text-slate-500">{dictionary.joinPage.runtimeEndpointLabel}</dt>
-              <dd>{config.spacetimeEndpoint ?? dictionary.joinPage.runtimeEndpointMissing}</dd>
+            <div className="rounded-2xl border border-border/70 bg-background/50 px-4 py-3">
+              <dt className="text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground/80">{dictionary.joinPage.runtimeEndpointLabel}</dt>
+              <dd className="mt-1 break-words text-sm font-medium text-foreground">{config.spacetimeEndpoint ?? dictionary.joinPage.runtimeEndpointMissing}</dd>
             </div>
-            <div>
-              <dt className="text-slate-500">{dictionary.joinPage.serverSecretsLabel}</dt>
-              <dd>{dictionary.joinPage.serverSecretsValue}</dd>
+            <div className="rounded-2xl border border-border/70 bg-background/50 px-4 py-3">
+              <dt className="text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground/80">{dictionary.joinPage.serverSecretsLabel}</dt>
+              <dd className="mt-1 text-sm font-medium text-foreground">{dictionary.joinPage.serverSecretsValue}</dd>
             </div>
           </dl>
         </SectionCard>

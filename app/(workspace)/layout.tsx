@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import { SectionNav } from '@/components/section-nav';
 import { getLocaleContext } from '@/lib/i18n/server';
 import { getWorkspaceRoutes } from '@/lib/shared/routes';
 
@@ -7,14 +7,13 @@ export default async function WorkspaceLayout({ children }: { children: React.Re
   const workspaceRoutes = getWorkspaceRoutes(dictionary.routes);
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap gap-3 border-b border-border pb-4 text-sm text-slate-300">
-        {workspaceRoutes.map((route) => (
-          <Link key={route.href} className="rounded-full border border-border px-3 py-1 hover:text-white" href={route.href}>
-            {route.label}
-          </Link>
-        ))}
-      </div>
+    <div className="space-y-8">
+      <SectionNav
+        badge={dictionary.routes.sections.workspace}
+        title={dictionary.routes.sections.workspace}
+        description={dictionary.authoringPage.description}
+        routes={workspaceRoutes}
+      />
       {children}
     </div>
   );

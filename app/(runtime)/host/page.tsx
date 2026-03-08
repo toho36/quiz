@@ -96,30 +96,30 @@ export default async function HostPage({
           title={pageError ? dictionary.hostPage.errorTitle : dictionary.hostPage.updatedTitle}
           eyebrow={pageError ? dictionary.hostPage.errorEyebrow : dictionary.hostPage.updatedEyebrow}
         >
-          <p className="text-sm text-slate-300">{pageError ?? notice}</p>
+          <p className="text-sm text-muted-foreground">{pageError ?? notice}</p>
         </SectionCard>
       )}
 
       {!readiness.canBootstrapRooms && (
         <SectionCard title={dictionary.hostPage.errorTitle} eyebrow={dictionary.hostPage.errorEyebrow}>
-          <p className="text-sm text-slate-300">Missing env: {readiness.runtime.missing.join(', ')}</p>
+          <p className="text-sm text-muted-foreground">Missing env: {readiness.runtime.missing.join(', ')}</p>
         </SectionCard>
       )}
 
       {!details ? (
         <SectionCard title={dictionary.hostPage.selectRoomTitle} eyebrow={dictionary.hostPage.selectRoomEyebrow}>
           {rooms.length === 0 ? (
-            <p className="text-sm text-slate-300">{dictionary.hostPage.noRooms}</p>
+            <p className="text-sm text-muted-foreground">{dictionary.hostPage.noRooms}</p>
           ) : (
-            <ul className="space-y-3 text-sm text-slate-300">
+            <ul className="space-y-3 text-sm text-muted-foreground">
               {rooms.map((room) => (
-                <li key={room.room_code} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border px-4 py-3">
+                <li key={room.room_code} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/80 bg-background/40 px-4 py-3">
                   <span>
                     {room.room_code} · {formatRoomLifecycle(dictionary, room.lifecycle_state)} · {dictionary.appLabels.joinedPlayersLabel}: {room.joined_player_count}
                   </span>
-                  <Link className="text-sky-300 hover:text-sky-200" href={`/host?roomCode=${room.room_code}`}>
-                    {dictionary.hostPage.openHostRoom}
-                  </Link>
+                  <Button asChild className="h-auto px-0 text-primary" variant="link">
+                    <Link href={{ pathname: '/host', query: { roomCode: room.room_code } }}>{dictionary.hostPage.openHostRoom}</Link>
+                  </Button>
                 </li>
               ))}
             </ul>
@@ -131,25 +131,27 @@ export default async function HostPage({
             title={`${dictionary.hostPage.roomTitle} ${details.state.shared_room.room_code}`}
             eyebrow={`${dictionary.appLabels.runtimePrefix} · ${formatRoomLifecycle(dictionary, details.state.shared_room.lifecycle_state)}`}
           >
-            <dl className="space-y-3 text-sm text-slate-300">
+            <dl className="space-y-3 text-sm text-muted-foreground">
               <div>
-                <dt className="text-slate-500">{dictionary.appLabels.sourceQuizLabel}</dt>
+                <dt className="text-muted-foreground/70">{dictionary.appLabels.sourceQuizLabel}</dt>
                 <dd>{details.bootstrap?.source_quiz_id ?? details.state.shared_room.room_id}</dd>
               </div>
               <div>
-                <dt className="text-slate-500">{dictionary.appLabels.currentPhaseLabel}</dt>
+                <dt className="text-muted-foreground/70">{dictionary.appLabels.currentPhaseLabel}</dt>
                 <dd>{formatQuestionPhase(dictionary, details.state.shared_room.question_phase)}</dd>
               </div>
               <div>
-                <dt className="text-slate-500">{dictionary.appLabels.joinedPlayersLabel}</dt>
+                <dt className="text-muted-foreground/70">{dictionary.appLabels.joinedPlayersLabel}</dt>
                 <dd>{details.state.joined_player_count}</dd>
               </div>
               <div>
-                <dt className="text-slate-500">{dictionary.appLabels.joinUrlLabel}</dt>
+                <dt className="text-muted-foreground/70">{dictionary.appLabels.joinUrlLabel}</dt>
                 <dd>
-                  <Link className="text-sky-300 hover:text-sky-200" href={`/join?roomCode=${details.state.shared_room.room_code}`}>
-                    {dictionary.hostPage.openJoinFlow} {details.state.shared_room.room_code}
-                  </Link>
+                  <Button asChild className="h-auto px-0 text-primary" variant="link">
+                    <Link href={{ pathname: '/join', query: { roomCode: details.state.shared_room.room_code } }}>
+                      {dictionary.hostPage.openJoinFlow} {details.state.shared_room.room_code}
+                    </Link>
+                  </Button>
                 </dd>
               </div>
             </dl>
@@ -170,19 +172,19 @@ export default async function HostPage({
           </SectionCard>
 
           <SectionCard title={dictionary.hostPage.liveRoomTitle} eyebrow={dictionary.hostPage.liveRoomEyebrow}>
-            <dl className="space-y-3 text-sm text-slate-300">
+            <dl className="space-y-3 text-sm text-muted-foreground">
               <div>
-                <dt className="text-slate-500">{dictionary.appLabels.submissionProgressLabel}</dt>
+                <dt className="text-muted-foreground/70">{dictionary.appLabels.submissionProgressLabel}</dt>
                 <dd>
                   {details.state.submission_progress.submitted_player_count} / {details.state.submission_progress.total_player_count}
                 </dd>
               </div>
               <div>
-                <dt className="text-slate-500">{dictionary.appLabels.connectedPlayersLabel}</dt>
+                <dt className="text-muted-foreground/70">{dictionary.appLabels.connectedPlayersLabel}</dt>
                 <dd>{details.state.connected_player_count}</dd>
               </div>
               <div>
-                <dt className="text-slate-500">{dictionary.appLabels.activePromptLabel}</dt>
+                <dt className="text-muted-foreground/70">{dictionary.appLabels.activePromptLabel}</dt>
                 <dd>{details.state.active_question?.prompt ?? dictionary.hostPage.waitingForStart}</dd>
               </div>
             </dl>
@@ -202,8 +204,8 @@ export default async function HostPage({
                 {details.state.active_question.display_options.length > 0 && (
                   <ul className="space-y-3">
                     {details.state.active_question.display_options.map((option) => (
-                      <li key={option.option_id} className="rounded-2xl border border-border px-4 py-3 text-sm text-slate-300">
-                        <p className="font-medium text-white">
+                      <li key={option.option_id} className="rounded-2xl border border-border px-4 py-3 text-sm text-muted-foreground">
+                        <p className="font-medium text-foreground">
                           {option.display_position}. {option.text}
                         </p>
                         {option.image && (
@@ -224,7 +226,7 @@ export default async function HostPage({
               </div>
             )}
             {details.state.leaderboard && (
-              <ol className="mt-4 space-y-2 text-sm text-slate-300">
+              <ol className="mt-4 space-y-2 text-sm text-muted-foreground">
                 {details.state.leaderboard.map((entry) => (
                   <li key={entry.room_player_id}>
                     #{entry.rank} {entry.display_name} · {entry.score_total} {dictionary.appLabels.pointsSuffix}

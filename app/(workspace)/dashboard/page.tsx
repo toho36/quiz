@@ -102,7 +102,7 @@ export default async function DashboardPage({
 
       <div className="flex flex-wrap gap-3">
         <Button asChild className="h-10 rounded-full px-4" variant="outline">
-          <Link href="/authoring">{dictionary.dashboardPage.openAuthoring}</Link>
+          <Link href={{ pathname: '/authoring' }}>{dictionary.dashboardPage.openAuthoring}</Link>
         </Button>
       </div>
 
@@ -125,7 +125,7 @@ export default async function DashboardPage({
             </dl>
             <div className="mt-4 flex flex-wrap gap-3">
               <Button asChild className="h-10 rounded-full px-4" variant="outline">
-                <Link href={`/authoring?quizId=${quiz.quiz_id}`}>{dictionary.dashboardPage.editQuiz}</Link>
+                <Link href={{ pathname: '/authoring', query: { quizId: quiz.quiz_id } }}>{dictionary.dashboardPage.editQuiz}</Link>
               </Button>
               {quiz.status === 'draft' ? (
                 <form action={publishQuizAction}>
@@ -158,8 +158,8 @@ export default async function DashboardPage({
                   {room.room_code} · {formatRoomLifecycle(dictionary, room.lifecycle_state)} · {dictionary.appLabels.joinedPlayersLabel}:{' '}
                   {room.joined_player_count}
                 </span>
-                <Button asChild className="h-auto px-0 text-sky-200" variant="link">
-                  <Link href={`/host?roomCode=${room.room_code}`}>{dictionary.dashboardPage.openHostRoom}</Link>
+                <Button asChild className="h-auto px-0 text-primary" variant="link">
+                  <Link href={{ pathname: '/host', query: { roomCode: room.room_code } }}>{dictionary.dashboardPage.openHostRoom}</Link>
                 </Button>
               </li>
             ))}
